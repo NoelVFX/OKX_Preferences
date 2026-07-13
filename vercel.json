@@ -4,7 +4,12 @@
   "builds": [
     {
       "src": "server.js",
-      "use": "@vercel/node"
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": [
+          ".vercel-hermes/**"
+        ]
+      }
     }
   ],
   "routes": [
@@ -12,11 +17,5 @@
       "src": "/(.*)",
       "dest": "/server.js"
     }
-  ],
-  "functions": {
-    "server.js": {
-      "includeFiles": ".vercel-hermes/**",
-      "maxDuration": 300
-    }
-  }
+  ]
 }
