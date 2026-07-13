@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+
+# local secrets and environment files
+.env
+.env.*
+!.env.example
+
+# runtime/generated state
+active_session.json
+web_sessions.json
+.hermes_revert_backup_*/
+__pycache__/
+*.py[cod]
+
+# OS/editor/log noise
+.DS_Store
+npm-debug.log*
+.vscode/
+.idea/

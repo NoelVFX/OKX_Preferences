@@ -1,0 +1,11 @@
+{
+  "pitch": "example product concept",
+  "survey_id": "survey_example",
+  "simulation_id": "simulation_example",
+  "pitch_category": "example_category",
+  "demographic_a": "Example target demographic A",
+  "demographic_b": "Example target demographic B",
+  "affinity_a": "0.0%",
+  "affinity_b": "0.0%",
+  "summary_matrix": "Example summary generated at runtime."
+}

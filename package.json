@@ -1,0 +1,19 @@
+{
+  "name": "preferences-asp-concierge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone ASP concierge for real-world product validation using Preferences AI, Hermes Agent, Discord, and Stripe Checkout.",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check": "node --check server.js",
+    "test": "node --test tests/*.mjs"
+  },
+  "dependencies": {
+    "dotenv": "latest",
+    "express": "latest",
+    "node-fetch": "^3.3.2",
+    "stripe": "latest"
+  }
+}

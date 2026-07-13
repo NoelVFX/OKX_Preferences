@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Preferences ASP Concierge — Data & Process Flow</title>
+<style>
+  :root {
+    --bg: #020617;
+    --panel: #0f172a;
+    --muted: #94a3b8;
+    --text: #e2e8f0;
+    --cyan: #22d3ee;
+    --emerald: #34d399;
+    --violet: #a78bfa;
+    --amber: #fbbf24;
+    --rose: #fb7185;
+    --orange: #fb923c;
+    --slate: #64748b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    color: var(--text);
+    background:
+      linear-gradient(rgba(30,41,59,.32) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(30,41,59,.32) 1px, transparent 1px),
+      radial-gradient(circle at 20% 0%, rgba(34,211,238,.12), transparent 32%),
+      radial-gradient(circle at 80% 20%, rgba(167,139,250,.12), transparent 30%),
+      var(--bg);
+    background-size: 40px 40px, 40px 40px, auto, auto, auto;
+    padding: 28px;
+  }
+  header, .wrap, footer { max-width: 1440px; margin: 0 auto; }
+  header { margin-bottom: 18px; }
+  .kicker { color: var(--cyan); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; }
+  h1 { margin: 8px 0 8px; font-size: 28px; line-height: 1.15; }
+  .subtitle { color: var(--muted); max-width: 980px; line-height: 1.55; }
+  .card {
+    background: rgba(15,23,42,.86);
+    border: 1px solid rgba(148,163,184,.25);
+    border-radius: 18px;
+    box-shadow: 0 24px 80px rgba(0,0,0,.35);
+    overflow: hidden;
+  }
+  svg { display: block; width: 100%; height: auto; }
+  .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+  .info {
+    background: rgba(15,23,42,.78);
+    border: 1px solid rgba(148,163,184,.22);
+    border-radius: 14px;
+    padding: 16px;
+  }
+  .info h3 { margin: 0 0 10px; font-size: 14px; }
+  .info ul { margin: 0; padding-left: 18px; color: #cbd5e1; font-size: 12px; line-height: 1.6; }
+  footer { color: var(--muted); font-size: 11px; margin-top: 16px; }
+  @media (max-width: 900px) { .cards { grid-template-columns: 1fr; } body { padding: 14px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="kicker">Preferences ASP Concierge</div>
+  <h1>End-to-end data and process flow</h1>
+  <div class="subtitle">From a Discord or browser concept brief, this ASP generates a free Hermes preview, provisions Preferences AI survey/simulation assets, creates a Stripe Checkout unlock, then fulfills paid users with dashboard links.</div>
+</header>
+
+<main class="wrap">
+  <div class="card">
+<svg viewBox="0 0 1440 1040" role="img" aria-label="Data and process flowchart for the Preferences AI concept validation gateway">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#22d3ee"/></marker>
+    <marker id="arrow-emerald" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#34d399"/></marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#fbbf24"/></marker>
+    <marker id="arrow-rose" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#fb7185"/></marker>
+    <filter id="glow"><feGaussianBlur stdDeviation="2.5" result="coloredBlur"/><feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <style>
+      .title { font: 700 17px ui-monospace, monospace; fill: #f8fafc; }
+      .label { font: 700 13px ui-monospace, monospace; fill: #e2e8f0; }
+      .small { font: 11px ui-monospace, monospace; fill: #cbd5e1; }
+      .tiny { font: 10px ui-monospace, monospace; fill: #94a3b8; }
+      .box-bg { fill: #0f172a; rx: 10; }
+      .front { fill: rgba(8,51,68,.42); stroke: #22d3ee; stroke-width: 1.7; rx: 10; }
+      .back { fill: rgba(6,78,59,.42); stroke: #34d399; stroke-width: 1.7; rx: 10; }
+      .data { fill: rgba(76,29,149,.42); stroke: #a78bfa; stroke-width: 1.7; rx: 10; }
+      .ext { fill: rgba(30,41,59,.62); stroke: #94a3b8; stroke-width: 1.7; rx: 10; }
+      .pay { fill: rgba(120,53,15,.36); stroke: #fbbf24; stroke-width: 1.7; rx: 10; }
+      .sec { fill: rgba(136,19,55,.36); stroke: #fb7185; stroke-width: 1.7; rx: 10; }
+      .bus { fill: rgba(251,146,60,.30); stroke: #fb923c; stroke-width: 1.7; rx: 10; }
+      .flow { fill:none; stroke:#94a3b8; stroke-width:2.2; marker-end:url(#arrow); }
+      .flow-cyan { fill:none; stroke:#22d3ee; stroke-width:2.5; marker-end:url(#arrow-cyan); }
+      .flow-green { fill:none; stroke:#34d399; stroke-width:2.5; marker-end:url(#arrow-emerald); }
+      .flow-pay { fill:none; stroke:#fbbf24; stroke-width:2.5; marker-end:url(#arrow-amber); }
+      .flow-sec { fill:none; stroke:#fb7185; stroke-width:2.5; stroke-dasharray:7 6; marker-end:url(#arrow-rose); }
+      .boundary { fill: rgba(2,6,23,.18); stroke: rgba(148,163,184,.35); stroke-width:1.5; stroke-dasharray:8 6; rx:18; }
+      .phase { font: 700 12px ui-monospace, monospace; fill:#94a3b8; letter-spacing:.12em; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1440" height="1040" fill="#020617"/>
+  <text x="48" y="48" class="title">Preferences ASP Concierge Flowchart</text>
+  <text x="48" y="72" class="tiny">Blue = Discord/user, Green = coordinator/backend processing, Purple = persisted/runtime data, Amber = Stripe/payment, Pink dashed = verified webhook/secret-sensitive fulfillment.</text>
+
+  <rect class="boundary" x="34" y="100" width="1372" height="260"/>
+  <text x="54" y="124" class="phase">PHASE 1 · REQUEST + FREE PREVIEW</text>
+
+  <rect class="box-bg" x="60" y="158" width="185" height="84"/><rect class="front" x="60" y="158" width="185" height="84"/>
+  <text x="82" y="188" class="label">Discord user</text>
+  <text x="82" y="211" class="small">runs /validate</text>
+  <text x="82" y="229" class="tiny">pitch: real-world ASP idea</text>
+
+  <rect class="box-bg" x="315" y="148" width="230" height="104"/><rect class="back" x="315" y="148" width="230" height="104"/>
+  <text x="337" y="178" class="label">agent_coordinator.py</text>
+  <text x="337" y="201" class="small">defers interaction</text>
+  <text x="337" y="219" class="small">sends processing msg</text>
+  <text x="337" y="237" class="tiny">Discord bot runtime</text>
+
+  <rect class="box-bg" x="620" y="124" width="230" height="88"/><rect class="ext" x="620" y="124" width="230" height="88"/>
+  <text x="642" y="154" class="label">Hermes Agent CLI</text>
+  <text x="642" y="177" class="small">preview JSON</text>
+  <text x="642" y="195" class="tiny">or deterministic fallback</text>
+
+  <rect class="box-bg" x="620" y="242" width="230" height="84"/><rect class="bus" x="620" y="242" width="230" height="84"/>
+  <text x="642" y="272" class="label">Preview report</text>
+  <text x="642" y="295" class="small">demographics, affinity</text>
+  <text x="642" y="313" class="tiny">summary matrix</text>
+
+  <rect class="box-bg" x="925" y="158" width="220" height="84"/><rect class="front" x="925" y="158" width="220" height="84"/>
+  <text x="947" y="188" class="label">Free Discord embed</text>
+  <text x="947" y="211" class="small">preview findings</text>
+  <text x="947" y="229" class="tiny">payment button added later</text>
+
+  <path class="flow-cyan" d="M245 200 C270 200, 285 200, 315 200"/>
+  <text x="260" y="188" class="tiny">pitch</text>
+  <path class="flow" d="M545 174 C574 162, 588 160, 620 160"/>
+  <text x="556" y="148" class="tiny">prompt</text>
+  <path class="flow" d="M735 212 L735 242"/>
+  <path class="flow-green" d="M850 284 C885 284, 891 216, 925 216"/>
+
+  <rect class="boundary" x="34" y="388" width="1372" height="290"/>
+  <text x="54" y="412" class="phase">PHASE 2 · PREFERENCES AI ASSET PROVISIONING + RUNTIME STATE</text>
+
+  <rect class="box-bg" x="70" y="472" width="220" height="88"/><rect class="back" x="70" y="472" width="220" height="88"/>
+  <text x="92" y="502" class="label">Build survey payload</text>
+  <text x="92" y="525" class="small">survey_prompt</text>
+  <text x="92" y="543" class="tiny">pitch + Groups A/B</text>
+
+  <rect class="box-bg" x="360" y="432" width="245" height="92"/><rect class="ext" x="360" y="432" width="245" height="92"/>
+  <text x="382" y="462" class="label">Preferences AI API</text>
+  <text x="382" y="485" class="small">POST /surveys/build</text>
+  <text x="382" y="503" class="tiny">returns survey_content</text>
+
+  <rect class="box-bg" x="360" y="558" width="245" height="92"/><rect class="ext" x="360" y="558" width="245" height="92"/>
+  <text x="382" y="588" class="label">Preferences AI API</text>
+  <text x="382" y="611" class="small">POST /surveys</text>
+  <text x="382" y="629" class="tiny">returns survey_id</text>
+
+  <rect class="box-bg" x="680" y="432" width="245" height="92"/><rect class="ext" x="680" y="432" width="245" height="92"/>
+  <text x="702" y="462" class="label">Verify survey</text>
+  <text x="702" y="485" class="small">GET /surveys/{id}</text>
+  <text x="702" y="503" class="tiny">retry propagation delay</text>
+
+  <rect class="box-bg" x="680" y="558" width="245" height="92"/><rect class="ext" x="680" y="558" width="245" height="92"/>
+  <text x="702" y="588" class="label">Launch simulation</text>
+  <text x="702" y="611" class="small">POST /simulations</text>
+  <text x="702" y="629" class="tiny">survey_id + population_query</text>
+
+  <rect class="box-bg" x="1015" y="464" width="235" height="116"/><rect class="data" x="1015" y="464" width="235" height="116"/>
+  <text x="1037" y="494" class="label">active_session.json</text>
+  <text x="1037" y="517" class="small">pitch, survey_id</text>
+  <text x="1037" y="535" class="small">simulation_id</text>
+  <text x="1037" y="553" class="tiny">demographics + scores</text>
+
+  <path class="flow-green" d="M545 236 C566 322, 87 350, 180 472"/>
+  <text x="94" y="438" class="tiny">preview + pitch</text>
+  <path class="flow-green" d="M290 516 C320 516, 330 478, 360 478"/>
+  <path class="flow-green" d="M482 524 L482 558"/>
+  <path class="flow-green" d="M605 604 C638 604, 646 478, 680 478"/>
+  <path class="flow-green" d="M803 524 L803 558"/>
+  <path class="flow" d="M925 604 C965 604, 975 522, 1015 522"/>
+  <text x="948" y="590" class="tiny">IDs + preview state</text>
+
+  <rect class="boundary" x="34" y="704" width="1372" height="250"/>
+  <text x="54" y="728" class="phase">PHASE 3 · CHECKOUT + WEBHOOK FULFILLMENT</text>
+
+  <rect class="box-bg" x="78" y="790" width="230" height="92"/><rect class="pay" x="78" y="790" width="230" height="92"/>
+  <text x="100" y="820" class="label">Stripe Checkout</text>
+  <text x="100" y="843" class="small">create Session</text>
+  <text x="100" y="861" class="tiny">metadata: discord_id, channel_id, pitch</text>
+
+  <rect class="box-bg" x="385" y="790" width="240" height="92"/><rect class="front" x="385" y="790" width="240" height="92"/>
+  <text x="407" y="820" class="label">Discord payment button</text>
+  <text x="407" y="843" class="small">Pay $9.99</text>
+  <text x="407" y="861" class="tiny">redirects to hosted Checkout</text>
+
+  <rect class="box-bg" x="700" y="790" width="220" height="92"/><rect class="pay" x="700" y="790" width="220" height="92"/>
+  <text x="722" y="820" class="label">Payment success</text>
+  <text x="722" y="843" class="small">checkout.session.completed</text>
+  <text x="722" y="861" class="tiny">Stripe-hosted page</text>
+
+  <rect class="box-bg" x="990" y="766" width="245" height="118"/><rect class="sec" x="990" y="766" width="245" height="118"/>
+  <text x="1012" y="796" class="label">server.js /webhook</text>
+  <text x="1012" y="819" class="small">verify signature</text>
+  <text x="1012" y="837" class="small">read manifest</text>
+  <text x="1012" y="855" class="tiny">build dashboard URLs</text>
+
+  <rect class="box-bg" x="990" y="910" width="245" height="84"/><rect class="front" x="990" y="910" width="245" height="84"/>
+  <text x="1012" y="940" class="label">Discord unlock msg</text>
+  <text x="1012" y="963" class="small">survey + simulation links</text>
+  <text x="1012" y="981" class="tiny">webhook, channel, or DM fallback</text>
+
+  <path class="flow-pay" d="M180 560 C160 646, 165 722, 193 790"/>
+  <text x="74" y="690" class="tiny">after manifest write</text>
+  <path class="flow-pay" d="M308 836 C340 836, 352 836, 385 836"/>
+  <path class="flow-pay" d="M625 836 C656 836, 668 836, 700 836"/>
+  <path class="flow-sec" d="M920 836 C952 836, 958 825, 990 825"/>
+  <text x="930" y="808" class="tiny">signed event</text>
+  <path class="flow" d="M1132 580 C1132 662, 1132 706, 1132 766"/>
+  <text x="1144" y="690" class="tiny">lookup IDs</text>
+  <path class="flow-sec" d="M1112 884 L1112 910"/>
+
+  <rect x="62" y="974" width="18" height="18" class="front"/><text x="88" y="988" class="tiny">Discord/user touchpoints</text>
+  <rect x="270" y="974" width="18" height="18" class="back"/><text x="296" y="988" class="tiny">Coordinator/backend logic</text>
+  <rect x="520" y="974" width="18" height="18" class="ext"/><text x="546" y="988" class="tiny">External APIs/services</text>
+  <rect x="755" y="974" width="18" height="18" class="data"/><text x="781" y="988" class="tiny">Runtime state/data</text>
+  <rect x="960" y="974" width="18" height="18" class="pay"/><text x="986" y="988" class="tiny">Stripe payment flow</text>
+</svg>
+  </div>
+
+  <section class="cards">
+    <div class="info">
+      <h3>Critical data objects</h3>
+      <ul>
+        <li>User pitch from Discord</li>
+        <li>Hermes preview JSON</li>
+        <li>Preferences AI survey_content</li>
+        <li>survey_id and simulation_id</li>
+        <li>Stripe Checkout Session metadata</li>
+      </ul>
+    </div>
+    <div class="info">
+      <h3>Fulfillment path</h3>
+      <ul>
+        <li>Stripe confirms payment via webhook</li>
+        <li>server.js verifies signature when configured</li>
+        <li>active_session.json supplies asset IDs</li>
+        <li>Discord receives dashboard unlock links</li>
+      </ul>
+    </div>
+    <div class="info">
+      <h3>Production risks to fix</h3>
+      <ul>
+        <li>Replace single manifest with database keyed by Checkout Session ID</li>
+        <li>Move all secrets into environment/secrets manager</li>
+        <li>Add idempotent webhook fulfillment records</li>
+        <li>Protect manual fallback checkout/admin paths</li>
+      </ul>
+    </div>
+  </section>
+</main>
+<footer>Generated from README.md, agent_coordinator.py, and server.js in the Preferences_ASP workspace.</footer>
+</body>
+</html>

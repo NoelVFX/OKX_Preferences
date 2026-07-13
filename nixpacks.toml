@@ -1,0 +1,14 @@
+[variables]
+PIP_DISABLE_PIP_VERSION_CHECK = "1"
+PYTHONUNBUFFERED = "1"
+
+[phases.setup]
+nixPkgs = ["nodejs_20", "python311", "curl"]
+
+[phases.install]
+cmds = [
+  "npm ci",
+  "curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py",
+  "python3 /tmp/get-pip.py --user --break-system-packages",
+  "python3 -m pip install --user --break-system-packages hermes-agent==0.15.2"
+]

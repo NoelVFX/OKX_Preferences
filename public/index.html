@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Preferences ASP Concierge</title>
+    <meta name="description" content="Preferences ASP Concierge turns a real-world product idea into a Preferences AI validation survey, digital population simulation, and paid dashboard unlock." />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero-card split">
+        <div class="hero-copy">
+          <p class="eyebrow">Product validation as a service</p>
+          <h1>Preferences ASP Concierge</h1>
+          <p class="lede">
+            A standalone Agent Service Provider that helps founders, builders, and product teams validate an idea before they spend on build or marketing. Submit a concept and the concierge creates a pitch-specific Preferences AI preview, provisions survey/simulation assets, and packages the unlock flow for a paid validation service.
+          </p>
+          <div class="badges">
+            <span>Agent Service Provider</span>
+            <span>Preferences AI survey + simulation</span>
+            <span>Paid dashboard unlock</span>
+          </div>
+        </div>
+        <form id="validate-form" class="input-panel">
+          <label for="pitch">Real-world product, startup, or workflow concept</label>
+          <textarea id="pitch" name="pitch" rows="7" maxlength="1000" placeholder="Example: AI scheduling concierge for small clinics that handles missed calls, patient reminders, and booking follow-ups as a paid validation service." required></textarea>
+          <button id="submit-button" type="submit">Generate ASP validation preview</button>
+          <p class="fine-print">
+            Live API runs can take 1-3 minutes. Keep this tab open while Preferences AI survey, simulation, and unlock resources are prepared.
+          </p>
+        </form>
+      </section>
+
+      <section id="status-card" class="status-card hidden" aria-live="polite">
+        <div class="spinner"></div>
+        <div>
+          <strong id="status-title">Building ASP validation preview…</strong>
+          <p id="status-text">Hermes Agent is framing this as a standalone Agent Service Provider.</p>
+        </div>
+      </section>
+
+      <section id="result" class="result-grid hidden">
+        <article class="result-card full">
+          <p class="eyebrow">Free ASP preview report</p>
+          <h2 id="result-pitch"></h2>
+          <p id="result-category" class="muted"></p>
+        </article>
+
+        <article class="result-card">
+          <p class="eyebrow">Target Demographic A</p>
+          <h3 id="demo-a"></h3>
+          <div class="metric"><span id="affinity-a"></span><small>Preview affinity</small></div>
+        </article>
+
+        <article class="result-card">
+          <p class="eyebrow">Target Demographic B</p>
+          <h3 id="demo-b"></h3>
+          <div class="metric"><span id="affinity-b"></span><small>Preview affinity</small></div>
+        </article>
+
+        <article class="result-card full">
+          <p class="eyebrow">ASP validation findings</p>
+          <ul id="summary-list" class="summary-list"></ul>
+        </article>
+
+        <article class="result-card full asset-card">
+          <div>
+            <p class="eyebrow">Live ASP resource state</p>
+            <h3 id="asset-heading">Preparing dashboard assets</h3>
+            <p id="asset-copy" class="muted"></p>
+            <dl class="asset-list">
+              <div><dt>Validation ID</dt><dd id="validation-id"></dd></div>
+              <div><dt>Survey API State</dt><dd id="survey-id"></dd></div>
+              <div><dt>Simulation State</dt><dd id="simulation-id"></dd></div>
+              <div><dt>Estimated panel</dt><dd id="estimate"></dd></div>
+            </dl>
+          </div>
+          <div class="unlock-panel">
+            <h3>Unlock full ASP dashboard links</h3>
+            <p>Pay with Stripe Checkout to view the Preferences AI survey dashboard and live simulation logs for your validation run.</p>
+            <a id="checkout-link" class="button-link disabled" href="#">Pay $9.99 to unlock</a>
+            <button id="retry-provisioning" class="button-link hidden" type="button">Retry live provisioning</button>
+            <p id="checkout-note" class="fine-print"></p>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <script src="/app.js?v=standalone-asp-20260713" type="module"></script>
+  </body>
+</html>
