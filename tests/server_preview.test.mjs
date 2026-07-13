@@ -280,3 +280,34 @@ test('provisionPreferencesAssets retries with deterministic survey sections when
   assert.deepEqual(calls.slice(0, 4), ['POST /surveys/build', 'POST /surveys', 'POST /surveys', 'GET /surveys/survey_fallback_retry_test']);
 });
 
+test('verifyPaidUnlock recovers paid web session from Stripe metadata when Vercel lost local session state', async () => {
+  const validationId = 'stripe-recovered-validation-test';
+  const checkoutSession = {
+    id: 'cs_test_recovered',
+    payment_status: 'paid',
+    metadata: {
+      validation_id: validationId,
+      pitch: 'AI meal planning concierge for busy parents',
+      survey_id: 'survey_recovered_test',
+      simulation_id: 'simulation_recovered_test',
+      live_status: 'created',
+      simulation_status: 'launched'
+    }
+  };
+
+  const recovered = await server.verifyPaidUnlock(validationId, checkoutSession.id, {
+    retrieveCheckoutSession: async (id) => {
+      assert.equal(id, checkoutSession.id);
+      return checkoutSession;
+    }
+  });
+
+  assert.equal(recovered.validation_id, validationId);
+  assert.equal(recovered.paid, true);
+  assert.equal(recovered.stripe_checkout_session_id, checkoutSession.id);
+  assert.equal(recovered.pitch, 'AI meal planning concierge for busy parents');
+  assert.equal(recovered.survey_url, 'https://dashboard.preferencesai.io/surveys/survey_recovered_test');
+  assert.equal(recovered.simulation_url, 'https://dashboard.preferencesai.io/simulations/simulation_recovered_test');
+  assert.equal(server.getWebSession(validationId).paid, true);
+});
+

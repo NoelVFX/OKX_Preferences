@@ -675,7 +675,9 @@ async function createCheckoutSession(validationSession, req = null) {
       validation_id: validationSession.validation_id,
       pitch: validationSession.pitch.slice(0, 500),
       survey_id: validationSession.survey_id || '',
-      simulation_id: validationSession.simulation_id || ''
+      simulation_id: validationSession.simulation_id || '',
+      live_status: validationSession.live_status || '',
+      simulation_status: validationSession.simulation_status || ''
     }
   });
   saveWebSession({ validation_id: validationSession.validation_id, stripe_checkout_session_id: session.id, checkout_url: session.url });
@@ -739,20 +741,65 @@ async function retryPreferencesProvisioning(validationId) {
   return updatedSession;
 }
 
-async function verifyPaidUnlock(validationId, checkoutSessionId) {
-  const session = getWebSession(validationId);
-  if (!session) throw new Error('Validation session not found.');
-  if (!WEB_REQUIRE_PAYMENT_FOR_DASHBOARD_LINKS) return { ...session, paid: true };
-  if (!stripe) throw new Error('Stripe is not configured on this server.');
+function sessionFromCheckoutMetadata(checkoutSession, requestedValidationId = '') {
+  const metadata = checkoutSession?.metadata || {};
+  const validationId = metadata.validation_id || requestedValidationId;
+  if (!validationId) throw new Error('Checkout Session metadata is missing validation_id.');
+  if (requestedValidationId && metadata.validation_id && metadata.validation_id !== requestedValidationId) {
+    throw new Error('Checkout Session does not match this validation.');
+  }
+
+  const pitch = metadata.pitch || 'Preferences ASP validation';
+  const surveyId = metadata.survey_id || '';
+  const simulationId = metadata.simulation_id || '';
+  const recovered = {
+    validation_id: validationId,
+    pitch,
+    preview: buildPreviewReport(pitch),
+    pitch_category: buildPreviewReport(pitch).pitch_category,
+    survey_id: surveyId,
+    simulation_id: simulationId,
+    survey_url: surveyId ? `https://dashboard.preferencesai.io/surveys/${surveyId}` : '',
+    simulation_url: simulationId ? `https://dashboard.preferencesai.io/simulations/${simulationId}` : '',
+    simulation_status: metadata.simulation_status || (simulationId ? 'launched' : 'not_available'),
+    simulation_message: 'Recovered from Stripe Checkout metadata after payment.',
+    live_status: metadata.live_status || (surveyId ? 'created' : 'unknown'),
+    paid: true,
+    paid_at: new Date().toISOString(),
+    stripe_checkout_session_id: checkoutSession.id
+  };
+  return saveWebSession(recovered);
+}
+
+async function verifyPaidUnlock(validationId, checkoutSessionId, { retrieveCheckoutSession = null } = {}) {
+  const existingSession = validationId ? getWebSession(validationId) : null;
+  if (!WEB_REQUIRE_PAYMENT_FOR_DASHBOARD_LINKS) {
+    if (existingSession) return { ...existingSession, paid: true };
+    if (!checkoutSessionId) throw new Error('Validation session not found.');
+  }
+  if (!stripe && !retrieveCheckoutSession) throw new Error('Stripe is not configured on this server.');
   if (!checkoutSessionId) throw new Error('Missing Stripe Checkout session_id.');
-  const checkoutSession = await stripe.checkout.sessions.retrieve(checkoutSessionId);
-  if (checkoutSession.metadata?.validation_id !== validationId) {
+  const checkoutSession = retrieveCheckoutSession
+    ? await retrieveCheckoutSession(checkoutSessionId)
+    : await stripe.checkout.sessions.retrieve(checkoutSessionId);
+  const metadataValidationId = checkoutSession.metadata?.validation_id || '';
+  if (validationId && metadataValidationId && metadataValidationId !== validationId) {
     throw new Error('Checkout Session does not match this validation.');
   }
   if (checkoutSession.payment_status !== 'paid') {
     throw new Error(`Checkout payment_status is ${checkoutSession.payment_status}, not paid.`);
   }
-  return saveWebSession({ validation_id: validationId, paid: true, paid_at: new Date().toISOString(), stripe_checkout_session_id: checkoutSession.id });
+
+  const finalValidationId = validationId || metadataValidationId;
+  if (existingSession) {
+    return saveWebSession({ validation_id: finalValidationId, paid: true, paid_at: new Date().toISOString(), stripe_checkout_session_id: checkoutSession.id });
+  }
+
+  // Vercel serverless instances only have ephemeral /tmp storage. The validation
+  // session created before redirect may not exist in the later /success or
+  // /webhook invocation, so recover enough state from signed Stripe Checkout
+  // metadata instead of showing "Validation session not found" after payment.
+  return sessionFromCheckoutMetadata(checkoutSession, finalValidationId);
 }
 
 function renderSuccessPage({ session, unlocked, error }) {
@@ -852,6 +899,11 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (request, 
         saveWebSession({ validation_id: validationId, paid: true, paid_at: new Date().toISOString(), stripe_checkout_session_id: checkout.id });
         console.log(`💰 [WEB PAYMENT VERIFIED] ${validationId} unlocked for: ${pitch}`);
         return response.json({ received: true, validation_id: validationId });
+      }
+      if (checkout.payment_status === 'paid') {
+        sessionFromCheckoutMetadata(checkout, validationId);
+        console.log(`💰 [WEB PAYMENT RECOVERED FROM STRIPE METADATA] ${validationId} unlocked for: ${pitch}`);
+        return response.json({ received: true, validation_id: validationId, recovered: true });
       }
     }
 
@@ -1005,6 +1057,8 @@ export {
   normalizeSummaryMatrix,
   publicBaseUrl,
   runHermesCli,
+  verifyPaidUnlock,
+  sessionFromCheckoutMetadata,
   retryPreferencesProvisioning,
   saveWebSession,
   getWebSession
