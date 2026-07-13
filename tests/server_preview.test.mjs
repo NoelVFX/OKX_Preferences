@@ -101,6 +101,7 @@ test('buildHermesPreviewReport uses Hermes JSON over the local fallback', async 
   });
 
   assert.equal(preview.pitch_category, 'cold_weather_plush_toy');
+  assert.equal(preview.preview_source, 'hermes_agent');
   assert.match(preview.demographic_a, /Parents ages 28-42/);
   assert.match(preview.demographic_b, /Outdoor gift shoppers ages 18-30/);
   assert.deepEqual(preview.summary_matrix, [
@@ -115,6 +116,8 @@ test('buildHermesPreviewReport falls back when Hermes output is invalid', async 
   });
 
   assert.equal(preview.pitch_category, 'general_consumer');
+  assert.equal(preview.preview_source, 'local_fallback');
+  assert.match(preview.preview_error, /not json/);
   assert.match(preview.demographic_a, /Early-adopter consumers/);
   assert.ok(Array.isArray(preview.summary_matrix));
 });

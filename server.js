@@ -41,8 +41,8 @@ const HERMES_PREVIEW_USE_CLI = !['0', 'false', 'no'].includes(String(process.env
 const bundledHermesCommand = path.join(__dirname, '.vercel-hermes', 'bin', 'hermes');
 const HERMES_COMMAND = process.env.HERMES_COMMAND || (fs.existsSync(bundledHermesCommand) ? bundledHermesCommand : (process.env.HOME ? path.join(process.env.HOME, '.local/bin/hermes') : 'hermes'));
 const HERMES_PREVIEW_TIMEOUT = Number(process.env.HERMES_PREVIEW_TIMEOUT || 90) * 1000;
-const HERMES_PROVIDER = process.env.HERMES_PROVIDER || '';
-const HERMES_MODEL = process.env.HERMES_MODEL || '';
+const HERMES_PROVIDER = process.env.HERMES_PROVIDER || (IS_VERCEL && process.env.OPENAI_API_KEY ? 'openai-api' : '');
+const HERMES_MODEL = process.env.HERMES_MODEL || (IS_VERCEL && process.env.OPENAI_API_KEY ? 'gpt-5.5' : '');
 
 if (!PREFERENCES_API_KEY) {
   console.warn('⚠️ PREFERENCES_AI_API_KEY is not set; web validations will render a dynamic preview but skip live Preferences AI API provisioning.');
@@ -372,7 +372,7 @@ function runHermesCli(prompt, { command = HERMES_COMMAND, timeoutMs = HERMES_PRE
 
 async function buildHermesPreviewReport(pitch, { runHermes = runHermesCli } = {}) {
   const fallback = buildPreviewReport(pitch);
-  if (!HERMES_PREVIEW_USE_CLI) return fallback;
+  if (!HERMES_PREVIEW_USE_CLI) return { ...fallback, preview_source: 'local_fallback', preview_error: 'HERMES_PREVIEW_USE_CLI is disabled' };
 
   const prompt = `
 You are Hermes Agent preparing a free browser preview for Preferences ASP Concierge, a standalone Agent Service Provider.
@@ -397,14 +397,15 @@ Do not include markdown fences, commentary, or any text outside the JSON object.
     for (const key of ['demographic_a', 'demographic_b', 'summary_matrix']) {
       if (!parsed[key]) throw new Error(`Hermes preview JSON missing key: ${key}`);
     }
-    const preview = { ...fallback, ...parsed };
+    const preview = { ...fallback, ...parsed, preview_source: 'hermes_agent', preview_error: '' };
     if (!String(preview.affinity_a || '').endsWith('%')) preview.affinity_a = fallback.affinity_a;
     if (!String(preview.affinity_b || '').endsWith('%')) preview.affinity_b = fallback.affinity_b;
     preview.summary_matrix = normalizeSummaryMatrix(preview.summary_matrix, fallback.summary_matrix);
     return preview;
   } catch (error) {
-    console.warn(`⚠️ Hermes preview generation failed; using local dynamic preview fallback: ${error.message}`);
-    return fallback;
+    const previewError = error.message;
+    console.warn(`⚠️ Hermes preview generation failed; using local dynamic preview fallback: ${previewError}`);
+    return { ...fallback, preview_source: 'local_fallback', preview_error: previewError };
   }
 }
 
@@ -628,6 +629,8 @@ function publicWebSession(session) {
     validation_id: session.validation_id,
     pitch: session.pitch,
     preview: session.preview,
+    preview_source: session.preview?.preview_source || 'unknown',
+    preview_error: session.preview?.preview_error || '',
     pitch_category: session.pitch_category,
     survey_id: session.survey_id || '',
     simulation_id: session.simulation_id || '',

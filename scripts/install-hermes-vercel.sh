@@ -5,11 +5,18 @@ set -euo pipefail
 # serverless function cannot spawn `hermes` unless we bundle a small Python
 # virtualenv into the deployment.
 #
-# Keep this opt-in: set HERMES_PREVIEW_USE_CLI=1 in Vercel if the preview should
-# use Hermes Agent. If unset/0, the app still deploys and uses the local dynamic
-# preview fallback.
-if [[ "${HERMES_PREVIEW_USE_CLI:-0}" != "1" ]]; then
-  echo "HERMES_PREVIEW_USE_CLI is not 1; skipping bundled Hermes Agent install."
+# Run only in Vercel. Local npm install should stay fast and should not create a
+# Python virtualenv unless the developer explicitly runs this script with VERCEL=1.
+if [[ "${VERCEL:-0}" != "1" && -z "${VERCEL_URL:-}" ]]; then
+  echo "Not running in Vercel; skipping bundled Hermes Agent install."
+  exit 0
+fi
+
+# Runtime defaults HERMES_PREVIEW_USE_CLI to enabled, so build-time should do the
+# same. If this default is 0, Vercel skips the install, then server.js later tries
+# to spawn Hermes and falls back because the binary is missing.
+if [[ "${HERMES_PREVIEW_USE_CLI:-1}" != "1" ]]; then
+  echo "HERMES_PREVIEW_USE_CLI is disabled; skipping bundled Hermes Agent install."
   exit 0
 fi
 

@@ -28,3 +28,8 @@ test('browser status copy is standalone and not campaign-branded', () => {
   assert.doesNotMatch(appJs, /Hackathon/i);
   assert.match(appJs, /Generating ASP positioning/);
 });
+
+test('browser reports whether free preview used Hermes Agent or local fallback', () => {
+  assert.match(appJs, /Free preview source: Hermes Agent/);
+  assert.match(appJs, /Free preview used local fallback because Hermes Agent/);
+});

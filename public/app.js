@@ -90,6 +90,13 @@ function render(data) {
     assetCopy.textContent = data.simulation_message || '';
   }
 
+  if (data.preview_source === 'hermes_agent' || preview.preview_source === 'hermes_agent') {
+    assetCopy.textContent = `${assetCopy.textContent} Free preview source: Hermes Agent.`.trim();
+  } else if (data.preview_error || preview.preview_error) {
+    const detail = String(data.preview_error || preview.preview_error).slice(0, 220);
+    assetCopy.textContent = `Free preview used local fallback because Hermes Agent did not return a usable JSON preview: ${detail}${detail.length >= 220 ? '…' : ''}`;
+  }
+
   retryButton.classList.toggle('hidden', data.live_status !== 'failed' || !currentValidationId);
   retryButton.disabled = false;
   retryButton.textContent = 'Retry live provisioning';
