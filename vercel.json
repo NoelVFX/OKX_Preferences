@@ -11,5 +11,11 @@
       "src": "/(.*)",
       "dest": "/server.js"
     }
-  ]
+  ],
+  "functions": {
+    "server.js": {
+      "includeFiles": ".vercel-hermes/**",
+      "maxDuration": 300
+    }
+  }
 }

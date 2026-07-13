@@ -12,12 +12,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '.env'), override: true });
 
+function isVercelRuntime() {
+  return process.env.VERCEL === '1' || Boolean(process.env.VERCEL_URL);
+}
+
 const app = express();
 const port = Number(process.env.PORT || 4242);
-const domain = process.env.DOMAIN || `http://localhost:${port}`;
+const localDefaultDomain = `http://localhost:${port}`;
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
 const stripe = stripeSecretKey ? new Stripe(stripeSecretKey) : null;
-const IS_VERCEL = process.env.VERCEL === '1' || Boolean(process.env.VERCEL_URL);
+const IS_VERCEL = isVercelRuntime();
 const RUNTIME_WRITABLE_DIR = IS_VERCEL ? '/tmp' : __dirname;
 
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
@@ -34,7 +38,8 @@ const SESSION_STORE_PATH = process.env.WEB_SESSION_STORE_PATH || path.join(RUNTI
 const ACTIVE_MANIFEST_PATH = process.env.MANIFEST_PATH || path.join(RUNTIME_WRITABLE_DIR, 'active_session.json');
 const STATIC_DIR = path.join(__dirname, 'public');
 const HERMES_PREVIEW_USE_CLI = !['0', 'false', 'no'].includes(String(process.env.HERMES_PREVIEW_USE_CLI || '1').toLowerCase());
-const HERMES_COMMAND = process.env.HERMES_COMMAND || (process.env.HOME ? path.join(process.env.HOME, '.local/bin/hermes') : 'hermes');
+const bundledHermesCommand = path.join(__dirname, '.vercel-hermes', 'bin', 'hermes');
+const HERMES_COMMAND = process.env.HERMES_COMMAND || (fs.existsSync(bundledHermesCommand) ? bundledHermesCommand : (process.env.HOME ? path.join(process.env.HOME, '.local/bin/hermes') : 'hermes'));
 const HERMES_PREVIEW_TIMEOUT = Number(process.env.HERMES_PREVIEW_TIMEOUT || 90) * 1000;
 const HERMES_PROVIDER = process.env.HERMES_PROVIDER || '';
 const HERMES_MODEL = process.env.HERMES_MODEL || '';
@@ -239,14 +244,53 @@ function normalizeSummaryMatrix(value, fallbackItems = []) {
   return fallbackItems;
 }
 
-function extractJsonObject(text) {
-  const output = String(text || '').trim();
-  const start = output.indexOf('{');
-  const end = output.lastIndexOf('}');
+function extractJsonObject(output) {
+  const text = String(output || '').trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
   if (start === -1 || end === -1 || end <= start) {
     throw new Error(`Hermes preview response did not contain JSON: ${output.slice(0, 300)}`);
   }
-  return JSON.parse(output.slice(start, end + 1));
+  return JSON.parse(text.slice(start, end + 1));
+}
+
+function normalizeBaseUrl(value) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+function isNgrokUrl(value) {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host.includes('ngrok-free.') || host.endsWith('.ngrok.app') || host.endsWith('.ngrok.io');
+  } catch {
+    return false;
+  }
+}
+
+function requestBaseUrl(req) {
+  const forwardedHost = req?.headers?.['x-forwarded-host'];
+  const hostHeader = Array.isArray(forwardedHost) ? forwardedHost[0] : (forwardedHost || req?.headers?.host || '');
+  const host = String(hostHeader).split(',')[0].trim();
+  if (!host || host.startsWith('localhost') || host.startsWith('127.0.0.1')) return '';
+  const forwardedProto = req?.headers?.['x-forwarded-proto'];
+  const protoHeader = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+  const proto = String(protoHeader || req?.protocol || 'https').split(',')[0].trim() || 'https';
+  return `${proto}://${host}`;
+}
+
+function configuredBaseUrl() {
+  const vercelUrl = normalizeBaseUrl(process.env.VERCEL_URL || '');
+  if (isVercelRuntime() && vercelUrl) return vercelUrl.startsWith('http') ? vercelUrl : `https://${vercelUrl}`;
+
+  const configured = normalizeBaseUrl(process.env.DOMAIN || '');
+  if (configured && !(isVercelRuntime() && isNgrokUrl(configured))) return configured;
+
+  return localDefaultDomain;
+}
+
+function publicBaseUrl(req) {
+  if (isVercelRuntime()) return requestBaseUrl(req) || configuredBaseUrl();
+  return configuredBaseUrl();
 }
 
 function buildHermesCliArgs(prompt, { provider = HERMES_PROVIDER, model = HERMES_MODEL } = {}) {
@@ -552,8 +596,9 @@ async function provisionPreferencesAssets(pitch, preview, { request = preference
   };
 }
 
-async function createCheckoutSession(validationSession) {
+async function createCheckoutSession(validationSession, req = null) {
   if (!stripe) return null;
+  const checkoutBaseUrl = publicBaseUrl(req);
   const session = await stripe.checkout.sessions.create({
     mode: 'payment',
     locale: 'en',
@@ -565,8 +610,8 @@ async function createCheckoutSession(validationSession) {
       },
       quantity: 1
     }],
-    success_url: `${domain}/success?validation_id=${validationSession.validation_id}&session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${domain}/cancel?validation_id=${validationSession.validation_id}`,
+    success_url: `${checkoutBaseUrl}/success?validation_id=${validationSession.validation_id}&session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${checkoutBaseUrl}/cancel?validation_id=${validationSession.validation_id}`,
     metadata: {
       validation_id: validationSession.validation_id,
       pitch: validationSession.pitch.slice(0, 500),
@@ -827,7 +872,7 @@ app.post('/api/validate', async (req, res) => {
   });
 
   try {
-    const checkoutSession = await createCheckoutSession(validationSession);
+    const checkoutSession = await createCheckoutSession(validationSession, req);
     if (checkoutSession) validationSession.checkout_url = checkoutSession.url;
   } catch (error) {
     console.error('⚠️ Stripe Checkout creation failed:', error.message);
@@ -895,6 +940,7 @@ export {
   buildHermesCliArgs,
   extractJsonObject,
   normalizeSummaryMatrix,
+  publicBaseUrl,
   runHermesCli,
   retryPreferencesProvisioning,
   saveWebSession,

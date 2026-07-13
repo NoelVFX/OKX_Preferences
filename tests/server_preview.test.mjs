@@ -19,6 +19,45 @@ test('Vercel can import the Express app as the default serverless export', () =>
   assert.equal(typeof server.default, 'function');
 });
 
+test('Vercel checkout URLs prefer the request host over a stale ngrok DOMAIN', () => {
+  const previousVercel = process.env.VERCEL;
+  const previousDomain = process.env.DOMAIN;
+  const previousVercelUrl = process.env.VERCEL_URL;
+  process.env.VERCEL = '1';
+  process.env.DOMAIN = 'https://wildfowl-cubicle-line.ngrok-free.dev';
+  delete process.env.VERCEL_URL;
+
+  try {
+    assert.equal(server.publicBaseUrl({
+      headers: {
+        'x-forwarded-proto': 'https',
+        'x-forwarded-host': 'okx-preferences.vercel.app'
+      }
+    }), 'https://okx-preferences.vercel.app');
+  } finally {
+    if (previousVercel === undefined) delete process.env.VERCEL; else process.env.VERCEL = previousVercel;
+    if (previousDomain === undefined) delete process.env.DOMAIN; else process.env.DOMAIN = previousDomain;
+    if (previousVercelUrl === undefined) delete process.env.VERCEL_URL; else process.env.VERCEL_URL = previousVercelUrl;
+  }
+});
+
+test('Vercel checkout URLs use VERCEL_URL instead of stale ngrok when no request host is available', () => {
+  const previousVercel = process.env.VERCEL;
+  const previousDomain = process.env.DOMAIN;
+  const previousVercelUrl = process.env.VERCEL_URL;
+  process.env.VERCEL = '1';
+  process.env.DOMAIN = 'https://wildfowl-cubicle-line.ngrok-free.dev';
+  process.env.VERCEL_URL = 'okx-preferences.vercel.app';
+
+  try {
+    assert.equal(server.publicBaseUrl(), 'https://okx-preferences.vercel.app');
+  } finally {
+    if (previousVercel === undefined) delete process.env.VERCEL; else process.env.VERCEL = previousVercel;
+    if (previousDomain === undefined) delete process.env.DOMAIN; else process.env.DOMAIN = previousDomain;
+    if (previousVercelUrl === undefined) delete process.env.VERCEL_URL; else process.env.VERCEL_URL = previousVercelUrl;
+  }
+});
+
 test('product configuration names the standalone ASP concierge', () => {
   assert.equal(server.WEB_PRODUCT_NAME, 'Preferences ASP Concierge Unlock');
 });

@@ -1,5 +1,6 @@
 # dependencies
 node_modules/
+.vercel-hermes/
 
 # local secrets and environment files
 .env

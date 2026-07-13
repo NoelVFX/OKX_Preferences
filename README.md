@@ -147,6 +147,35 @@ HERMES_MODEL=gpt-5.5
 OPENAI_API_KEY=...
 ```
 
+## Vercel deployment notes
+
+For Vercel, do not point `DOMAIN` or Stripe webhooks at an ngrok tunnel. The app now derives the public base URL from the incoming Vercel request host, so checkout success/cancel links use the deployed URL, for example:
+
+```text
+https://okx-preferences.vercel.app/success
+https://okx-preferences.vercel.app/webhook
+```
+
+Recommended Vercel environment variables:
+
+```dotenv
+DOMAIN=https://okx-preferences.vercel.app
+PREFERENCES_AI_API_KEY=...
+STRIPE_SECRET_KEY=...
+STRIPE_WEBHOOK_SECRET=...
+WEB_PRODUCT_NAME="Preferences ASP Concierge Unlock"
+
+# Set this to 1 only if you want Vercel to bundle and spawn Hermes Agent.
+HERMES_PREVIEW_USE_CLI=1
+HERMES_PROVIDER=openai-api
+HERMES_MODEL=gpt-5.5
+OPENAI_API_KEY=...
+```
+
+`NGROK_URL` is only for local Discord/tunnel workflows. In Stripe Dashboard, configure the webhook endpoint as your deployed Vercel URL plus `/webhook`, not the old ngrok URL.
+
+The `vercel-build` script installs Hermes Agent into `.vercel-hermes/` when `HERMES_PREVIEW_USE_CLI=1`; `server.js` then spawns that bundled CLI. If you leave `HERMES_PREVIEW_USE_CLI=0`, the app still works but the free preview uses the deterministic local fallback instead of Hermes Agent.
+
 ## Test plan
 
 ```bash
