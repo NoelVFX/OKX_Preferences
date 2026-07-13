@@ -14,6 +14,11 @@ process.env.HERMES_PREVIEW_USE_CLI = '1';
 
 const server = await import('../server.js');
 
+test('Vercel can import the Express app as the default serverless export', () => {
+  assert.equal(server.default, server.app);
+  assert.equal(typeof server.default, 'function');
+});
+
 test('product configuration names the standalone ASP concierge', () => {
   assert.equal(server.WEB_PRODUCT_NAME, 'Preferences ASP Concierge Unlock');
 });

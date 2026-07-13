@@ -17,6 +17,8 @@ const port = Number(process.env.PORT || 4242);
 const domain = process.env.DOMAIN || `http://localhost:${port}`;
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
 const stripe = stripeSecretKey ? new Stripe(stripeSecretKey) : null;
+const IS_VERCEL = process.env.VERCEL === '1' || Boolean(process.env.VERCEL_URL);
+const RUNTIME_WRITABLE_DIR = IS_VERCEL ? '/tmp' : __dirname;
 
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
@@ -28,8 +30,8 @@ const WEB_REQUIRE_PAYMENT_FOR_DASHBOARD_LINKS = !['0', 'false', 'no'].includes(S
 const WEB_PRICE_CENTS = Number(process.env.WEB_PRICE_CENTS || 999);
 const WEB_PRICE_CURRENCY = process.env.WEB_PRICE_CURRENCY || 'usd';
 const WEB_PRODUCT_NAME = process.env.WEB_PRODUCT_NAME || 'Preferences ASP Concierge Unlock';
-const SESSION_STORE_PATH = process.env.WEB_SESSION_STORE_PATH || path.join(__dirname, 'web_sessions.json');
-const ACTIVE_MANIFEST_PATH = process.env.MANIFEST_PATH || path.join(__dirname, 'active_session.json');
+const SESSION_STORE_PATH = process.env.WEB_SESSION_STORE_PATH || path.join(RUNTIME_WRITABLE_DIR, 'web_sessions.json');
+const ACTIVE_MANIFEST_PATH = process.env.MANIFEST_PATH || path.join(RUNTIME_WRITABLE_DIR, 'active_session.json');
 const STATIC_DIR = path.join(__dirname, 'public');
 const HERMES_PREVIEW_USE_CLI = !['0', 'false', 'no'].includes(String(process.env.HERMES_PREVIEW_USE_CLI || '1').toLowerCase());
 const HERMES_COMMAND = process.env.HERMES_COMMAND || (process.env.HOME ? path.join(process.env.HOME, '.local/bin/hermes') : 'hermes');
@@ -876,11 +878,13 @@ app.get('/cancel', (req, res) => {
   res.type('html').send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Checkout cancelled</title><link rel="stylesheet" href="/styles.css"></head><body><main class="shell narrow"><a href="/" class="back-link">← Back</a><section class="hero-card"><h1>Checkout cancelled</h1><p>Your free preview is still saved${validationId ? ` under validation ID <code>${escapeHtml(validationId)}</code>` : ''}. You can run another validation anytime.</p></section></main></body></html>`);
 });
 
-if (process.env.WEB_DISABLE_SERVER_LISTEN !== '1') {
+if (process.env.WEB_DISABLE_SERVER_LISTEN !== '1' && !IS_VERCEL) {
   app.listen(port, () => {
     console.log(`Preferences ASP Concierge active: http://localhost:${port}`);
   });
 }
+
+export default app;
 
 export {
   app,
