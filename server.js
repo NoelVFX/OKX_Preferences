@@ -39,7 +39,14 @@ const ACTIVE_MANIFEST_PATH = process.env.MANIFEST_PATH || path.join(RUNTIME_WRIT
 const STATIC_DIR = path.join(__dirname, 'public');
 const HERMES_PREVIEW_USE_CLI = !['0', 'false', 'no'].includes(String(process.env.HERMES_PREVIEW_USE_CLI || '1').toLowerCase());
 const bundledHermesCommand = path.join(__dirname, '.vercel-hermes', 'bin', 'hermes');
-const HERMES_COMMAND = process.env.HERMES_COMMAND || (fs.existsSync(bundledHermesCommand) ? bundledHermesCommand : (process.env.HOME ? path.join(process.env.HOME, '.local/bin/hermes') : 'hermes'));
+function resolveHermesCommand() {
+  const configured = process.env.HERMES_COMMAND || '';
+  if (IS_VERCEL && fs.existsSync(bundledHermesCommand) && (!configured || configured === 'hermes')) return bundledHermesCommand;
+  if (configured) return configured;
+  if (fs.existsSync(bundledHermesCommand)) return bundledHermesCommand;
+  return process.env.HOME ? path.join(process.env.HOME, '.local/bin/hermes') : 'hermes';
+}
+const HERMES_COMMAND = resolveHermesCommand();
 const HERMES_PREVIEW_TIMEOUT = Number(process.env.HERMES_PREVIEW_TIMEOUT || 90) * 1000;
 const HERMES_PROVIDER = process.env.HERMES_PROVIDER || (IS_VERCEL && process.env.OPENAI_API_KEY ? 'openai-api' : '');
 const HERMES_MODEL = process.env.HERMES_MODEL || (IS_VERCEL && process.env.OPENAI_API_KEY ? 'gpt-5.5' : '');
@@ -303,9 +310,11 @@ function buildHermesCliArgs(prompt, { provider = HERMES_PROVIDER, model = HERMES
 
 function hermesCliEnv() {
   const localBin = process.env.HOME ? path.join(process.env.HOME, '.local/bin') : '';
+  const bundledBin = path.dirname(bundledHermesCommand);
+  const pathParts = [bundledBin, localBin, process.env.PATH || ''].filter(Boolean);
   return {
     ...process.env,
-    PATH: localBin ? `${localBin}:${process.env.PATH || ''}` : process.env.PATH
+    PATH: pathParts.join(':')
   };
 }
 
@@ -470,6 +479,63 @@ async function preferencesRequest(method, endpoint, { body, attempts = 3 } = {})
   throw lastError || new Error(`Preferences AI ${method} ${endpoint} failed after ${attempts} attempts; last response ${lastResponse?.status}`);
 }
 
+function buildFallbackSurveySections(pitch, preview = {}) {
+  const demographicA = preview.demographic_a || 'likely early adopters aged 21-38';
+  const demographicB = preview.demographic_b || 'mainstream buyers aged 30-55';
+  return [
+    {
+      section_id: 'sec_1',
+      section_title: 'Screening and segment fit',
+      section_goal: 'Confirm respondent segment, category relevance, and current behavior.',
+      questions: [
+        { question_type: 'multiple_choice', question: 'Which group best describes you?', choices: [demographicA, demographicB, 'Neither group, but I understand the category'] },
+        { question_type: 'multiple_choice', question: `How often do you currently experience the problem addressed by this concept: ${pitch.slice(0, 140)}?`, choices: ['Daily', 'Weekly', 'Monthly', 'Rarely', 'Never'] },
+        { question_type: 'rate', question: 'How relevant is this concept to your current needs?', choices: [], rateValues: [1, 2, 3, 4, 5], minRateDescription: 'Not relevant', maxRateDescription: 'Extremely relevant' }
+      ]
+    },
+    {
+      section_id: 'sec_2',
+      section_title: 'Purchase intent and objections',
+      section_goal: 'Measure willingness to try, pay, and overcome objections.',
+      questions: [
+        { question_type: 'rate', question: 'How likely would you be to try this service if it were available today?', choices: [], rateValues: [1, 2, 3, 4, 5], minRateDescription: 'Very unlikely', maxRateDescription: 'Very likely' },
+        { question_type: 'multiple_choice', question: 'What would be your biggest concern before buying or using it?', choices: ['Price or subscription fatigue', 'Trust and data privacy', 'Unclear value compared with current alternatives', 'Setup effort or learning curve', 'I have no major concern'] },
+        { question_type: 'multiple_choice', question: 'Which price range would feel reasonable for a useful paid version?', choices: ['$0 / only free', '$1-$9 per month', '$10-$29 per month', '$30-$99 per month', '$100+ per month or enterprise pricing'] }
+      ]
+    },
+    {
+      section_id: 'sec_3',
+      section_title: 'Messaging and launch channel',
+      section_goal: 'Identify the strongest positioning and go-to-market wedge.',
+      questions: [
+        { question_type: 'multiple_choice', question: 'Which message would make you most interested?', choices: ['Save time immediately', 'Get more accurate decisions', 'Reduce manual work', 'Improve outcomes with personalized insights', 'Lower cost versus alternatives'] },
+        { question_type: 'multiple_choice', question: 'Where would you most likely discover and trust this offer?', choices: ['Search or comparison pages', 'Short-form social video', 'Creator or expert recommendation', 'Work/community referral', 'Direct sales or demo'] },
+        { question_type: 'rate', question: 'Overall, how strong is the product-market fit for your segment?', choices: [], rateValues: [1, 2, 3, 4, 5], minRateDescription: 'Weak fit', maxRateDescription: 'Strong fit' }
+      ]
+    }
+  ];
+}
+
+async function createSurveyWithFallback(request, pitch, preview, primarySections) {
+  const createBody = {
+    survey_title: `Preferences ASP Concierge - ${pitch.slice(0, 50)} Discovery Panel`,
+    survey_type: 'product_market_fit',
+    survey_goal: `Validate ASP fit, product-market fit, customer preferences, pricing, and messaging for: ${pitch}`,
+    sections: primarySections,
+    languages: ['English (US)']
+  };
+
+  try {
+    return await request('POST', '/surveys', { body: createBody });
+  } catch (error) {
+    if (error.status !== 400) throw error;
+    console.warn(`⚠️ Preferences AI rejected generated survey content; retrying with deterministic fallback survey: ${error.message}`);
+    return request('POST', '/surveys', {
+      body: { ...createBody, sections: buildFallbackSurveySections(pitch, preview) }
+    });
+  }
+}
+
 function buildSimulationPayload({ surveyId, pitch, preview, estimate }) {
   const respondents = Number(estimate?.respondents || estimate?.sample_size || process.env.PREFERENCES_SIMULATION_RESPONDENTS || 100);
   const pruCost = Number(estimate?.pru_cost || process.env.PREFERENCES_SIMULATION_PRU_COST || Math.ceil(respondents / 10));
@@ -516,15 +582,7 @@ async function provisionPreferencesAssets(pitch, preview, { request = preference
   const surveyContent = buildJson?.data?.survey_content;
   if (!surveyContent) throw new Error('Survey build response did not include data.survey_content');
 
-  const createJson = await request('POST', '/surveys', {
-    body: {
-      survey_title: `Preferences ASP Concierge - ${pitch.slice(0, 50)} Discovery Panel`,
-      survey_type: 'product_market_fit',
-      survey_goal: `Validate ASP fit, product-market fit, customer preferences, pricing, and messaging for: ${pitch}`,
-      sections: surveyContent,
-      languages: ['English (US)']
-    }
-  });
+  const createJson = await createSurveyWithFallback(request, pitch, preview, surveyContent);
   const surveyId = extractSurveyId(createJson);
 
   let verified = false;
@@ -940,6 +998,8 @@ export {
   buildPreviewReport,
   buildHermesPreviewReport,
   provisionPreferencesAssets,
+  buildFallbackSurveySections,
+  createSurveyWithFallback,
   buildHermesCliArgs,
   extractJsonObject,
   normalizeSummaryMatrix,

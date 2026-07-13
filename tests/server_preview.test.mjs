@@ -241,3 +241,42 @@ test('provisionPreferencesAssets returns created survey when simulation launch f
     'POST /simulations'
   ]);
 });
+
+test('provisionPreferencesAssets retries with deterministic survey sections when Preferences AI rejects generated content', async () => {
+  let surveyCreateAttempts = 0;
+  let fallbackSections = null;
+  const calls = [];
+  const fakeRequest = async (method, endpoint, options = {}) => {
+    calls.push(`${method} ${endpoint}`);
+    if (method === 'POST' && endpoint === '/surveys/build') {
+      return { data: { survey_content: [{ title: 'Generated but invalid', questions: [{ question_type: 'unsupported_type', question: 'Bad?', choices: [] }] }] } };
+    }
+    if (method === 'POST' && endpoint === '/surveys') {
+      surveyCreateAttempts += 1;
+      if (surveyCreateAttempts === 1) {
+        const error = new Error('Preferences AI POST /surveys failed: HTTP 400 Invalid survey data');
+        error.status = 400;
+        throw error;
+      }
+      fallbackSections = options.body.sections;
+      return { data: { survey_id: 'survey_fallback_retry_test' } };
+    }
+    if (method === 'GET' && endpoint === '/surveys/survey_fallback_retry_test') return { data: { id: 'survey_fallback_retry_test' } };
+    if (method === 'GET' && endpoint === '/balance') return { data: { pru_balance: 0 } };
+    if (method === 'POST' && endpoint === '/simulations/estimate-cost') return { data: { pru_cost: 10, respondents: 100 } };
+    throw new Error(`unexpected request ${method} ${endpoint}`);
+  };
+
+  const assets = await server.provisionPreferencesAssets('AI notes app for students', server.buildPreviewReport('AI notes app for students'), {
+    request: fakeRequest
+  });
+
+  assert.equal(assets.status, 'created');
+  assert.equal(assets.survey_id, 'survey_fallback_retry_test');
+  assert.equal(surveyCreateAttempts, 2);
+  assert.ok(Array.isArray(fallbackSections));
+  assert.equal(fallbackSections[0].section_id, 'sec_1');
+  assert.equal(fallbackSections[0].questions[0].question_type, 'multiple_choice');
+  assert.deepEqual(calls.slice(0, 4), ['POST /surveys/build', 'POST /surveys', 'POST /surveys', 'GET /surveys/survey_fallback_retry_test']);
+});
+
