@@ -459,3 +459,161 @@ test('verifyPaidUnlock recovers paid web session from Stripe metadata when Verce
   assert.equal(server.getWebSession(validationId).paid, true);
 });
 
+test('buildHermesPitchDeckReport uses Hermes JSON over the local fallback', async () => {
+  const session = {
+    validation_id: 'deck-test-1',
+    pitch: 'AI scheduling concierge for small clinics',
+    preview: server.buildPreviewReport('AI scheduling concierge for small clinics')
+  };
+
+  const deck = await server.buildHermesPitchDeckReport(session, {
+    fetchInsights: async () => null,
+    runHermes: async () => JSON.stringify({
+      title: 'ClinicFlow',
+      tagline: 'Never miss another patient call.',
+      problem: 'Clinics lose revenue to missed calls.',
+      solution: 'An AI concierge answers and books automatically.',
+      market_opportunity: 'Two validated segments show strong demand.',
+      target_segments: [{ name: 'Clinic admins', affinity: '82.1%' }, { name: 'Solo practitioners', affinity: '61.4%' }],
+      validation_findings: ['Admins want less phone time.', 'Practitioners worry about trust.'],
+      business_model: 'Monthly SaaS subscription per clinic.',
+      go_to_market: 'Partner with clinic software vendors.',
+      ask: 'Seeking 5 pilot clinics.',
+      next_steps: ['Ship pilot', 'Collect feedback', 'Expand']
+    })
+  });
+
+  assert.equal(deck.deck_source, 'hermes_agent');
+  assert.equal(deck.title, 'ClinicFlow');
+  assert.equal(deck.target_segments.length, 2);
+  assert.deepEqual(deck.validation_findings, ['Admins want less phone time.', 'Practitioners worry about trust.']);
+});
+
+test('buildHermesPitchDeckReport falls back to validation-derived deck content when Hermes output is invalid', async () => {
+  const session = {
+    validation_id: 'deck-test-2',
+    pitch: 'AI scheduling concierge for small clinics',
+    preview: server.buildPreviewReport('AI scheduling concierge for small clinics')
+  };
+
+  const deck = await server.buildHermesPitchDeckReport(session, {
+    fetchInsights: async () => null,
+    runHermes: async () => 'not json'
+  });
+
+  assert.equal(deck.deck_source, 'local_fallback');
+  assert.match(deck.deck_error, /not json/);
+  assert.equal(deck.target_segments[0].name, session.preview.demographic_a);
+  assert.equal(deck.target_segments[1].name, session.preview.demographic_b);
+  assert.ok(Array.isArray(deck.validation_findings));
+});
+
+test('buildHermesPitchDeckReport continues without simulation insights when fetching them fails', async () => {
+  const session = {
+    validation_id: 'deck-test-3',
+    pitch: 'AI scheduling concierge for small clinics',
+    preview: server.buildPreviewReport('AI scheduling concierge for small clinics'),
+    simulation_id: 'simulation_test_123'
+  };
+  let capturedPrompt = '';
+
+  const deck = await server.buildHermesPitchDeckReport(session, {
+    fetchInsights: async () => { throw new Error('simulation results endpoint not available'); },
+    runHermes: async (prompt) => {
+      capturedPrompt = prompt;
+      return JSON.stringify({
+        title: 'Deck',
+        problem: 'p',
+        solution: 's',
+        target_segments: [{ name: 'A', affinity: '1%' }, { name: 'B', affinity: '2%' }],
+        validation_findings: ['f1']
+      });
+    }
+  });
+
+  assert.equal(deck.deck_source, 'hermes_agent');
+  assert.match(capturedPrompt, /Live simulation result data was not available/);
+});
+
+test('fetchSimulationInsights returns null when no simulation id or API key is available', async () => {
+  const insights = await server.fetchSimulationInsights('', { request: async () => { throw new Error('should not be called'); } });
+  assert.equal(insights, null);
+});
+
+test('buildPitchDeckBuffer produces a valid pptx (zip) buffer with one slide per section', async () => {
+  const session = {
+    validation_id: 'deck-test-4',
+    pitch: 'AI scheduling concierge for small clinics'
+  };
+  const deck = server.buildPitchDeckFallback({ ...session, preview: server.buildPreviewReport(session.pitch) });
+
+  const buffer = await server.buildPitchDeckBuffer(session, deck);
+
+  assert.ok(Buffer.isBuffer(buffer));
+  assert.equal(buffer.slice(0, 2).toString(), 'PK');
+  assert.ok(buffer.length > 1000);
+});
+
+test('verifyPitchDeckPaid rejects a checkout session that is not marked for the pitch deck product', async () => {
+  const validationId = 'deck-security-test-1';
+  server.saveWebSession({
+    validation_id: validationId,
+    pitch: 'AI scheduling concierge for small clinics',
+    preview: server.buildPreviewReport('AI scheduling concierge for small clinics')
+  });
+
+  const baseUnlockCheckoutSession = {
+    id: 'cs_test_base_unlock_only',
+    payment_status: 'paid',
+    metadata: { validation_id: validationId }
+  };
+
+  await assert.rejects(
+    () => server.verifyPitchDeckPaid(validationId, baseUnlockCheckoutSession.id, {
+      retrieveCheckoutSession: async () => baseUnlockCheckoutSession
+    }),
+    /was not for the pitch deck add-on/
+  );
+  assert.equal(server.getWebSession(validationId).pitch_deck_paid, undefined);
+});
+
+test('verifyPitchDeckPaid marks the session paid for a genuine pitch deck checkout', async () => {
+  const validationId = 'deck-security-test-2';
+  server.saveWebSession({
+    validation_id: validationId,
+    pitch: 'AI scheduling concierge for small clinics',
+    preview: server.buildPreviewReport('AI scheduling concierge for small clinics')
+  });
+
+  const deckCheckoutSession = {
+    id: 'cs_test_deck_paid',
+    payment_status: 'paid',
+    metadata: { validation_id: validationId, product: 'pitch_deck', pitch: 'AI scheduling concierge for small clinics' }
+  };
+
+  const result = await server.verifyPitchDeckPaid(validationId, deckCheckoutSession.id, {
+    retrieveCheckoutSession: async () => deckCheckoutSession
+  });
+
+  assert.equal(result.pitch_deck_paid, true);
+  assert.equal(result.pitch_deck_checkout_session_id, deckCheckoutSession.id);
+  assert.equal(server.getWebSession(validationId).pitch_deck_paid, true);
+});
+
+test('verifyPitchDeckPaid recovers from checkout metadata when the local session was lost (Vercel /tmp eviction)', async () => {
+  const validationId = 'deck-security-test-3';
+  const deckCheckoutSession = {
+    id: 'cs_test_deck_recovered',
+    payment_status: 'paid',
+    metadata: { validation_id: validationId, product: 'pitch_deck', pitch: 'AI meal planning concierge for busy parents' }
+  };
+
+  const result = await server.verifyPitchDeckPaid(validationId, deckCheckoutSession.id, {
+    retrieveCheckoutSession: async () => deckCheckoutSession
+  });
+
+  assert.equal(result.pitch_deck_paid, true);
+  assert.equal(result.pitch, 'AI meal planning concierge for busy parents');
+  assert.ok(result.preview);
+});
+

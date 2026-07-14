@@ -7,6 +7,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
+import PptxGenJS from 'pptxgenjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,6 +35,8 @@ const WEB_REQUIRE_PAYMENT_FOR_DASHBOARD_LINKS = !['0', 'false', 'no'].includes(S
 const WEB_PRICE_CENTS = Number(process.env.WEB_PRICE_CENTS || 999);
 const WEB_PRICE_CURRENCY = process.env.WEB_PRICE_CURRENCY || 'usd';
 const WEB_PRODUCT_NAME = process.env.WEB_PRODUCT_NAME || 'Preferences ASP Concierge Unlock';
+const WEB_PITCH_DECK_PRICE_CENTS = Number(process.env.WEB_PITCH_DECK_PRICE_CENTS || WEB_PRICE_CENTS);
+const WEB_PITCH_DECK_PRODUCT_NAME = process.env.WEB_PITCH_DECK_PRODUCT_NAME || 'Preferences ASP Concierge Investor Pitch Deck';
 const SESSION_STORE_PATH = process.env.WEB_SESSION_STORE_PATH || path.join(RUNTIME_WRITABLE_DIR, 'web_sessions.json');
 const ACTIVE_MANIFEST_PATH = process.env.MANIFEST_PATH || path.join(RUNTIME_WRITABLE_DIR, 'active_session.json');
 const STATIC_DIR = path.join(__dirname, 'public');
@@ -502,6 +505,169 @@ Do not include markdown fences, commentary, or any text outside the JSON object.
   }
 }
 
+function buildPitchDeckFallback(session) {
+  const preview = session.preview || {};
+  const pitch = session.pitch || 'Preferences ASP validation';
+  return {
+    title: pitch.length > 60 ? `${pitch.slice(0, 57)}...` : pitch,
+    tagline: 'A repeatable, agent-validated product opportunity.',
+    problem: `Target buyers currently lack a fast, trustworthy way to validate demand for: ${pitch}`,
+    solution: `${pitch}, packaged as a repeatable, paid validation-ready Agent Service Provider offering.`,
+    market_opportunity: `Preferences AI identified two viable buyer segments for this concept in the ${preview.pitch_category || 'general_consumer'} category.`,
+    target_segments: [
+      { name: preview.demographic_a || 'Segment A', affinity: preview.affinity_a || 'N/A' },
+      { name: preview.demographic_b || 'Segment B', affinity: preview.affinity_b || 'N/A' }
+    ],
+    validation_findings: (preview.summary_matrix && preview.summary_matrix.length) ? preview.summary_matrix : ['Validation findings were not available for this run.'],
+    business_model: 'Paid unlock of a custom validation survey, digital population simulation, and dashboard access, with this pitch deck as a premium add-on deliverable.',
+    go_to_market: 'Launch through targeted outreach to the higher-affinity segment first, using messaging validated in the survey findings.',
+    ask: 'Seeking early customers and design partners to pilot this validation-ready concept.',
+    next_steps: ['Review the unlocked Preferences AI survey and simulation dashboards.', 'Run a small paid pilot with the highest-affinity segment.', 'Iterate messaging based on the objection data above.']
+  };
+}
+
+function buildPitchDeckPrompt(session, simulationInsights) {
+  const preview = session.preview || {};
+  const pitch = session.pitch || 'Preferences ASP validation';
+  const insightsText = simulationInsights
+    ? `Live Preferences AI simulation result data is also available, use it to sharpen the findings: ${JSON.stringify(simulationInsights).slice(0, 1500)}`
+    : 'Live simulation result data was not available for this run; rely on the validation preview below.';
+
+  return `
+You are Hermes Agent preparing an investor-ready pitch deck outline for Preferences ASP Concierge, a standalone Agent Service Provider.
+The concept is: ${pitch}
+
+Validation context already generated for this concept:
+- Category: ${preview.pitch_category || 'general_consumer'}
+- Demographic A: ${preview.demographic_a || 'unknown'} (affinity ${preview.affinity_a || 'unknown'})
+- Demographic B: ${preview.demographic_b || 'unknown'} (affinity ${preview.affinity_b || 'unknown'})
+- Validation findings: ${(preview.summary_matrix || []).join(' | ')}
+${insightsText}
+
+Return only valid compact JSON with these keys:
+title: short punchy deck title, under 60 characters
+tagline: one sentence positioning line
+problem: 1-2 sentences on the problem this concept addresses
+solution: 1-2 sentences on how this concept solves it
+market_opportunity: 1-2 sentences citing the validated demographics
+target_segments: array of exactly 2 objects, each with "name" and "affinity" keys, reusing the demographic and affinity values above
+validation_findings: array of 3-5 short strings summarizing the validation evidence, sharpened from the findings above
+business_model: 1-2 sentences on how this makes money
+go_to_market: 1-2 sentences on the launch wedge
+ask: 1 sentence describing what this pitch is asking for (funding, pilot customers, or partners)
+next_steps: array of 3 short strings, concrete next actions
+
+Do not include markdown fences, commentary, or any text outside the JSON object.
+`.trim();
+}
+
+async function fetchSimulationInsights(simulationId, { request = preferencesRequest } = {}) {
+  if (!PREFERENCES_API_KEY || !simulationId) return null;
+  // Best-effort only: this codebase has not previously needed to read simulation
+  // results back, so the exact Preferences AI response shape here is unconfirmed.
+  // Any failure must not block pitch deck generation, which can fall back to the
+  // validation preview data alone.
+  const json = await request('GET', `/simulations/${simulationId}`);
+  return json?.data || json || null;
+}
+
+async function buildHermesPitchDeckReport(session, { runHermes = defaultHermesRunner(), fetchInsights = fetchSimulationInsights } = {}) {
+  const fallback = buildPitchDeckFallback(session);
+  if (!HERMES_PREVIEW_USE_CLI) return { ...fallback, deck_source: 'local_fallback', deck_error: 'HERMES_PREVIEW_USE_CLI is disabled' };
+
+  let simulationInsights = null;
+  if (session.simulation_id) {
+    try {
+      simulationInsights = await fetchInsights(session.simulation_id);
+    } catch (error) {
+      console.warn(`⚠️ Could not fetch Preferences AI simulation insights for pitch deck (continuing without them): ${error.message}`);
+    }
+  }
+
+  const prompt = buildPitchDeckPrompt(session, simulationInsights);
+  try {
+    const output = await runHermes(prompt);
+    const parsed = extractJsonObject(output);
+    for (const key of ['title', 'problem', 'solution', 'target_segments', 'validation_findings']) {
+      if (!parsed[key]) throw new Error(`Hermes pitch deck JSON missing key: ${key}`);
+    }
+    const deck = { ...fallback, ...parsed, deck_source: 'hermes_agent', deck_error: '' };
+    deck.target_segments = (Array.isArray(deck.target_segments) && deck.target_segments.length) ? deck.target_segments : fallback.target_segments;
+    deck.validation_findings = normalizeSummaryMatrix(deck.validation_findings, fallback.validation_findings);
+    deck.next_steps = normalizeSummaryMatrix(deck.next_steps, fallback.next_steps);
+    return deck;
+  } catch (error) {
+    const deckError = error.message;
+    console.warn(`⚠️ Hermes pitch deck generation failed; using local dynamic deck fallback: ${deckError}`);
+    return { ...fallback, deck_source: 'local_fallback', deck_error: deckError };
+  }
+}
+
+const DECK_COLORS = { bg: '0B0F1F', panel: '141A33', accent: '8F7CFF', accent2: '36E7C4', text: 'F5F7FF', muted: 'AEB7D9' };
+
+function addDeckTitleSlide(pptx, deck) {
+  const slide = pptx.addSlide();
+  slide.background = { color: DECK_COLORS.bg };
+  slide.addText(deck.title, { x: 0.6, y: 1.8, w: 8.8, h: 1.5, fontSize: 40, bold: true, color: DECK_COLORS.text, fontFace: 'Arial' });
+  slide.addText(deck.tagline, { x: 0.6, y: 3.2, w: 8.8, h: 1, fontSize: 18, color: DECK_COLORS.accent2, fontFace: 'Arial' });
+  slide.addText('Prepared by Preferences ASP Concierge', { x: 0.6, y: 5.0, w: 8.8, h: 0.4, fontSize: 12, color: DECK_COLORS.muted, fontFace: 'Arial' });
+  return slide;
+}
+
+function addDeckBodySlide(pptx, heading, bodyText) {
+  const slide = pptx.addSlide();
+  slide.background = { color: DECK_COLORS.bg };
+  slide.addText(heading, { x: 0.6, y: 0.5, w: 8.8, h: 0.8, fontSize: 26, bold: true, color: DECK_COLORS.accent2, fontFace: 'Arial' });
+  slide.addText(String(bodyText || ''), { x: 0.6, y: 1.6, w: 8.8, h: 3.6, fontSize: 18, color: DECK_COLORS.text, fontFace: 'Arial', valign: 'top' });
+  return slide;
+}
+
+function addDeckBulletSlide(pptx, heading, items) {
+  const slide = pptx.addSlide();
+  slide.background = { color: DECK_COLORS.bg };
+  slide.addText(heading, { x: 0.6, y: 0.5, w: 8.8, h: 0.8, fontSize: 26, bold: true, color: DECK_COLORS.accent2, fontFace: 'Arial' });
+  const bulletText = (items || []).map((item) => ({ text: String(item), options: { bullet: true, breakLine: true, color: DECK_COLORS.text, fontSize: 16 } }));
+  slide.addText(bulletText, { x: 0.6, y: 1.6, w: 8.8, h: 3.6, fontFace: 'Arial' });
+  return slide;
+}
+
+function addDeckSegmentsSlide(pptx, heading, segments) {
+  const slide = pptx.addSlide();
+  slide.background = { color: DECK_COLORS.bg };
+  slide.addText(heading, { x: 0.6, y: 0.5, w: 8.8, h: 0.8, fontSize: 26, bold: true, color: DECK_COLORS.accent2, fontFace: 'Arial' });
+  const headerCellOptions = { bold: true, color: DECK_COLORS.text, fill: { color: DECK_COLORS.panel } };
+  const rows = [[
+    { text: 'Segment', options: headerCellOptions },
+    { text: 'Preview Affinity', options: headerCellOptions }
+  ]];
+  for (const segment of (segments || [])) {
+    rows.push([
+      { text: String(segment.name || segment.description || 'Segment'), options: { color: DECK_COLORS.text, fill: { color: DECK_COLORS.bg } } },
+      { text: String(segment.affinity || 'N/A'), options: { color: DECK_COLORS.accent2, bold: true, fill: { color: DECK_COLORS.bg } } }
+    ]);
+  }
+  slide.addTable(rows, { x: 0.6, y: 1.6, w: 8.8, h: 2.5, fontSize: 16, border: { type: 'solid', color: '2A3157', pt: 1 } });
+  return slide;
+}
+
+async function buildPitchDeckBuffer(session, deck) {
+  const pptx = new PptxGenJS();
+  pptx.layout = 'LAYOUT_16x9';
+
+  addDeckTitleSlide(pptx, deck);
+  addDeckBodySlide(pptx, 'Problem', deck.problem);
+  addDeckBodySlide(pptx, 'Solution', deck.solution);
+  addDeckSegmentsSlide(pptx, 'Target Segments (Preferences AI Validated)', deck.target_segments);
+  addDeckBodySlide(pptx, 'Market Opportunity', deck.market_opportunity);
+  addDeckBulletSlide(pptx, 'Validation Findings', deck.validation_findings);
+  addDeckBodySlide(pptx, 'Business Model', deck.business_model);
+  addDeckBodySlide(pptx, 'Go-To-Market', deck.go_to_market);
+  addDeckBodySlide(pptx, 'The Ask', deck.ask);
+  addDeckBulletSlide(pptx, 'Next Steps', deck.next_steps);
+
+  return pptx.write({ outputType: 'nodebuffer' });
+}
+
 function extractSurveyId(responseJson) {
   const data = responseJson?.data || {};
   const surveyId = responseJson?.survey_id || responseJson?.id || data.survey_id || data.id;
@@ -768,6 +934,31 @@ async function createCheckoutSession(validationSession, req = null) {
   return session;
 }
 
+async function createPitchDeckCheckoutSession(validationSession, req = null) {
+  if (!stripe) return null;
+  const checkoutBaseUrl = publicBaseUrl(req);
+  const session = await stripe.checkout.sessions.create({
+    mode: 'payment',
+    locale: 'en',
+    line_items: [{
+      price_data: {
+        currency: WEB_PRICE_CURRENCY,
+        product_data: { name: WEB_PITCH_DECK_PRODUCT_NAME, description: `Hermes Agent investor pitch deck for: ${validationSession.pitch.slice(0, 240)}` },
+        unit_amount: WEB_PITCH_DECK_PRICE_CENTS
+      },
+      quantity: 1
+    }],
+    success_url: `${checkoutBaseUrl}/success?validation_id=${validationSession.validation_id}&deck_session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${checkoutBaseUrl}/success?validation_id=${validationSession.validation_id}`,
+    metadata: {
+      product: 'pitch_deck',
+      validation_id: validationSession.validation_id,
+      pitch: validationSession.pitch.slice(0, 500)
+    }
+  });
+  return session;
+}
+
 function publicWebSession(session) {
   return {
     validation_id: session.validation_id,
@@ -886,7 +1077,60 @@ async function verifyPaidUnlock(validationId, checkoutSessionId, { retrieveCheck
   return sessionFromCheckoutMetadata(checkoutSession, finalValidationId);
 }
 
-function renderSuccessPage({ session, unlocked, error }) {
+async function verifyPitchDeckPaid(validationId, deckCheckoutSessionId, { retrieveCheckoutSession = null } = {}) {
+  const existingSession = validationId ? getWebSession(validationId) : null;
+  if (existingSession?.pitch_deck_paid) return existingSession;
+  if (!WEB_REQUIRE_PAYMENT_FOR_DASHBOARD_LINKS && existingSession) {
+    return saveWebSession({ validation_id: validationId, pitch_deck_paid: true, pitch_deck_paid_at: new Date().toISOString() });
+  }
+  if (!stripe && !retrieveCheckoutSession) throw new Error('Stripe is not configured on this server.');
+  if (!deckCheckoutSessionId) throw new Error('Missing Stripe Checkout session_id for the pitch deck purchase.');
+
+  const checkoutSession = retrieveCheckoutSession
+    ? await retrieveCheckoutSession(deckCheckoutSessionId)
+    : await stripe.checkout.sessions.retrieve(deckCheckoutSessionId);
+  // Require the product marker so a base-unlock session_id can't be replayed
+  // here to unlock the pitch deck without paying for it.
+  if (checkoutSession.metadata?.product !== 'pitch_deck') {
+    throw new Error('Checkout Session was not for the pitch deck add-on.');
+  }
+  const metadataValidationId = checkoutSession.metadata?.validation_id || '';
+  if (validationId && metadataValidationId && metadataValidationId !== validationId) {
+    throw new Error('Checkout Session does not match this validation.');
+  }
+  if (checkoutSession.payment_status !== 'paid') {
+    throw new Error(`Checkout payment_status is ${checkoutSession.payment_status}, not paid.`);
+  }
+
+  const finalValidationId = validationId || metadataValidationId;
+  const paidFields = { pitch_deck_paid: true, pitch_deck_paid_at: new Date().toISOString(), pitch_deck_checkout_session_id: checkoutSession.id };
+  if (existingSession) {
+    return saveWebSession({ validation_id: finalValidationId, ...paidFields });
+  }
+
+  // Same ephemeral-storage recovery as the base unlock, using the pitch this
+  // deck checkout carried in its own metadata.
+  const pitch = checkoutSession.metadata?.pitch || 'Preferences ASP validation';
+  return saveWebSession({
+    validation_id: finalValidationId,
+    pitch,
+    preview: buildPreviewReport(pitch),
+    pitch_category: buildPreviewReport(pitch).pitch_category,
+    ...paidFields
+  });
+}
+
+const DECK_ERROR_MESSAGES = {
+  checkout_unavailable: 'Could not start pitch deck checkout. Please try again.',
+  not_paid: 'We could not verify payment for the pitch deck yet.',
+  generation_failed: 'Something went wrong generating the pitch deck. Please try again.'
+};
+
+function friendlyDeckErrorMessage(code) {
+  return DECK_ERROR_MESSAGES[code] || DECK_ERROR_MESSAGES.generation_failed;
+}
+
+function renderSuccessPage({ session, unlocked, error, pitchDeckUnlocked, pitchDeckError, deckSessionId }) {
   const previewItems = (session?.preview?.summary_matrix || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
   const links = unlocked ? `
     <div class="unlock-card success">
@@ -899,7 +1143,30 @@ function renderSuccessPage({ session, unlocked, error }) {
       <p>${escapeHtml(error || 'Payment could not be verified yet.')}</p>
     </div>`;
 
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Preferences ASP Unlock</title><link rel="stylesheet" href="/styles.css"></head><body><main class="shell narrow"><a href="/" class="back-link">← Run another validation</a><section class="hero-card">${links}<div class="result-card"><p class="eyebrow">Concept</p><h1>${escapeHtml(session?.pitch || 'Preferences ASP validation')}</h1><ul>${previewItems}</ul></div></section></main></body></html>`;
+  let pitchDeckSection = '';
+  if (unlocked) {
+    const validationId = escapeAttr(session.validation_id || '');
+    if (pitchDeckUnlocked) {
+      const downloadHref = `/api/session/${validationId}/pitch-deck/download${deckSessionId ? `?deck_session_id=${escapeAttr(deckSessionId)}` : ''}`;
+      pitchDeckSection = `
+    <div class="unlock-panel">
+      <h3>Investor pitch deck</h3>
+      <p>Hermes Agent generated a downloadable pitch deck (.pptx) from this concept's validation data.</p>
+      <a class="button-link" href="${downloadHref}">Download pitch deck (.pptx)</a>
+    </div>`;
+    } else {
+      const errorNote = pitchDeckError ? `<p class="fine-print">${escapeHtml(friendlyDeckErrorMessage(pitchDeckError))}</p>` : '';
+      pitchDeckSection = `
+    <div class="unlock-panel">
+      <h3>Generate an investor pitch deck</h3>
+      <p>Have Hermes Agent turn this validation into a downloadable pitch deck (.pptx) built from your survey and simulation data.</p>
+      <a class="button-link" href="/api/session/${validationId}/pitch-deck/checkout">Pay $${(WEB_PITCH_DECK_PRICE_CENTS / 100).toFixed(2)} to generate pitch deck</a>
+      ${errorNote}
+    </div>`;
+    }
+  }
+
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Preferences ASP Unlock</title><link rel="stylesheet" href="/styles.css"></head><body><main class="shell narrow"><a href="/" class="back-link">← Run another validation</a><section class="hero-card">${links}${pitchDeckSection}<div class="result-card"><p class="eyebrow">Concept</p><h1>${escapeHtml(session?.pitch || 'Preferences ASP validation')}</h1><ul>${previewItems}</ul></div></section></main></body></html>`;
 }
 
 function escapeHtml(value) {
@@ -1103,6 +1370,7 @@ app.get('/api/session/:validationId', (req, res) => {
 app.get('/success', async (req, res) => {
   const validationId = String(req.query.validation_id || '');
   const checkoutSessionId = String(req.query.session_id || '');
+  const deckSessionId = String(req.query.deck_session_id || '');
   let session = validationId ? getWebSession(validationId) : null;
   let unlocked = false;
   let error = '';
@@ -1112,7 +1380,69 @@ app.get('/success', async (req, res) => {
   } catch (err) {
     error = err.message;
   }
-  res.type('html').send(renderSuccessPage({ session, unlocked, error }));
+
+  let pitchDeckUnlocked = false;
+  let pitchDeckError = '';
+  if (unlocked) {
+    const currentSession = getWebSession(validationId);
+    if (currentSession?.pitch_deck_paid) {
+      pitchDeckUnlocked = true;
+    } else if (deckSessionId) {
+      try {
+        session = await verifyPitchDeckPaid(validationId, deckSessionId);
+        pitchDeckUnlocked = true;
+      } catch (err) {
+        console.warn('⚠️ Pitch deck payment verification failed:', err.message);
+        pitchDeckError = 'not_paid';
+      }
+    } else if (req.query.deck_error) {
+      pitchDeckError = String(req.query.deck_error);
+    }
+  }
+
+  res.type('html').send(renderSuccessPage({ session, unlocked, error, pitchDeckUnlocked, pitchDeckError, deckSessionId }));
+});
+
+app.get('/api/session/:validationId/pitch-deck/checkout', async (req, res) => {
+  const validationId = String(req.params.validationId || '');
+  const backUrl = `/success?validation_id=${encodeURIComponent(validationId)}`;
+  const session = getWebSession(validationId);
+  if (!session) return res.redirect(303, `${backUrl}&deck_error=checkout_unavailable`);
+
+  try {
+    const checkoutSession = await createPitchDeckCheckoutSession(session, req);
+    if (!checkoutSession) throw new Error('Stripe is not configured on this server.');
+    return res.redirect(303, checkoutSession.url);
+  } catch (error) {
+    console.error('⚠️ Pitch deck Stripe Checkout creation failed:', error.message);
+    return res.redirect(303, `${backUrl}&deck_error=checkout_unavailable`);
+  }
+});
+
+app.get('/api/session/:validationId/pitch-deck/download', async (req, res) => {
+  const validationId = String(req.params.validationId || '');
+  const deckSessionId = String(req.query.deck_session_id || '');
+  const backUrl = `/success?validation_id=${encodeURIComponent(validationId)}${deckSessionId ? `&deck_session_id=${encodeURIComponent(deckSessionId)}` : ''}`;
+
+  let session;
+  try {
+    session = await verifyPitchDeckPaid(validationId, deckSessionId);
+  } catch (error) {
+    console.warn('⚠️ Pitch deck download blocked, payment not verified:', error.message);
+    return res.redirect(303, `${backUrl}&deck_error=not_paid`);
+  }
+
+  try {
+    const deck = await buildHermesPitchDeckReport(session);
+    const buffer = await buildPitchDeckBuffer(session, deck);
+    const safeName = String(session.pitch || 'pitch-deck').slice(0, 40).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'pitch-deck';
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}-pitch-deck.pptx"`);
+    return res.send(buffer);
+  } catch (error) {
+    console.error('⚠️ Pitch deck generation failed:', error.message);
+    return res.redirect(303, `${backUrl}&deck_error=generation_failed`);
+  }
 });
 
 app.get('/cancel', (req, res) => {
@@ -1147,5 +1477,12 @@ export {
   sessionFromCheckoutMetadata,
   retryPreferencesProvisioning,
   saveWebSession,
-  getWebSession
+  getWebSession,
+  buildPitchDeckFallback,
+  buildPitchDeckPrompt,
+  buildHermesPitchDeckReport,
+  buildPitchDeckBuffer,
+  fetchSimulationInsights,
+  verifyPitchDeckPaid,
+  WEB_PITCH_DECK_PRICE_CENTS
 };

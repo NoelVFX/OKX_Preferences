@@ -26,6 +26,7 @@ It repackages the original Preferences AI Discord concierge into a browser + Dis
    - optional digital population simulation
 4. Stripe Checkout sells the full report/dashboard unlock.
 5. After payment, the user receives unlocked Preferences AI dashboard links.
+6. On the unlocked page, the user can pay for a second add-on: Hermes Agent generates an investor pitch deck (`.pptx`) from the validation preview and Preferences AI simulation data, downloadable immediately after payment.
 
 ## Why it is a real-world ASP
 
@@ -33,19 +34,29 @@ Many builders have ideas but do not know who will buy, what objections matter, o
 
 - Input: product/startup/workflow concept
 - Agent work: market framing, audience segmentation, survey generation, simulation setup
-- Output: validation preview + survey/simulation dashboard links
-- Monetization: Stripe-paid unlock
+- Output: validation preview + survey/simulation dashboard links + optional Hermes Agent investor pitch deck
+- Monetization: Stripe-paid unlock, plus a Stripe-paid pitch deck add-on
 - Delivery: web UI and Discord command
 
 ## Main files
 
 - `public/index.html` — standalone landing page
 - `public/app.js` — browser workflow and status/result rendering
-- `server.js` — Express API, Hermes preview, Preferences AI provisioning, Stripe Checkout, unlock pages, webhook handler
+- `server.js` — Express API, Hermes preview, Preferences AI provisioning, Stripe Checkout, unlock pages, pitch deck generation, webhook handler
 - `agent_coordinator.py` — Discord concierge flow for slash-command usage
-- `tests/*.mjs` — Node regression tests for frontend copy, Hermes prompt shape, and provisioning behavior
+- `tests/*.mjs` — Node regression tests for frontend copy, Hermes prompt shape, provisioning behavior, and pitch deck generation
 - `tests/test_preferencesai_simulation_payload.py` — Python payload tests for the Discord coordinator
 - `ecosystem.config.cjs` — PM2 process names for this standalone copy
+
+## Pitch deck add-on
+
+After the base unlock is paid, the `/success` page offers a second Stripe Checkout for a Hermes Agent-generated investor pitch deck:
+
+1. The user pays `WEB_PITCH_DECK_PRICE_CENTS` via a dedicated Stripe Checkout session (tagged with `metadata.product = 'pitch_deck'` so it can't be satisfied by replaying a base-unlock `session_id`).
+2. On return to `/success`, the payment is verified and the page swaps the "Pay to generate" panel for a "Download pitch deck (.pptx)" link.
+3. `GET /api/session/:validationId/pitch-deck/download` generates the deck on demand (nothing is pre-rendered or stored server-side, since Vercel's `/tmp` is ephemeral): it best-effort fetches Preferences AI simulation results, asks Hermes Agent for a structured slide outline (title, problem, solution, target segments, validation findings, business model, go-to-market, ask, next steps), and renders it into a real `.pptx` with [pptxgenjs](https://www.npmjs.com/package/pptxgenjs). If Hermes fails, the deck falls back to a deterministic outline built from the existing validation preview, so the paid deliverable is never blocked by an LLM outage.
+
+The download link carries the Stripe `deck_session_id` as a fallback so it still works even if the in-memory/`/tmp` session was evicted between payment and download on Vercel — the same resilience pattern the base unlock already uses for its own checkout recovery.
 
 ## Local setup
 
@@ -72,6 +83,10 @@ STRIPE_WEBHOOK_SECRET=whsec_...
 WEB_PRODUCT_NAME="Preferences ASP Concierge Unlock"
 WEB_PRICE_CENTS=999
 WEB_PRICE_CURRENCY=usd
+
+# Pitch deck add-on, sold on the unlocked /success page after the base unlock
+WEB_PITCH_DECK_PRODUCT_NAME="Preferences ASP Concierge Investor Pitch Deck"
+WEB_PITCH_DECK_PRICE_CENTS=999
 
 # Hermes preview generation
 HERMES_PREVIEW_USE_CLI=1
