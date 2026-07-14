@@ -7,11 +7,22 @@ import path from 'path';
 import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
-import PptxGenJS from 'pptxgenjs';
+import { createRequire } from 'module';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '.env'), override: true });
+
+// Vercel's build bundles this ESM ("type": "module") codebase, and its
+// bundler resolves `import PptxGenJS from 'pptxgenjs'` to the package's
+// dist/pptxgen.es.js build (an ES module) but then loads it through Node's
+// CommonJS loader at runtime, which fails with "Cannot use import statement
+// outside a module". Forcing an explicit require() here always resolves the
+// package's "require" export condition (dist/pptxgen.cjs.js) instead,
+// sidestepping that dual-package resolution mismatch. Plain `node server.js`
+// (local/Railway) was never affected; only Vercel's bundled output was.
+const require = createRequire(import.meta.url);
+const PptxGenJS = require('pptxgenjs');
 
 function isVercelRuntime() {
   return process.env.VERCEL === '1' || Boolean(process.env.VERCEL_URL);
