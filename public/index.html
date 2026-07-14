@@ -100,10 +100,18 @@
           </div>
           <div class="unlock-panel">
             <h3>Unlock full ASP dashboard links</h3>
-            <p>Pay with Stripe Checkout to view the Preferences AI survey dashboard and live simulation logs for your validation run.</p>
+            <p>Pay with Stripe Checkout or the OKX Wallet to view the Preferences AI survey dashboard and live simulation logs for your validation run.</p>
             <a id="checkout-link" class="button-link disabled" href="#">Pay $9.99 to unlock</a>
             <button id="retry-provisioning" class="button-link hidden" type="button">Retry live provisioning</button>
             <p id="checkout-note" class="fine-print"></p>
+            <div id="crypto-pay" class="crypto-pay hidden">
+              <div class="pay-divider"><span>or pay with crypto</span></div>
+              <button id="crypto-pay-btn" class="button-link okx-btn" type="button">
+                <span class="okx-glyph" aria-hidden="true">◇</span>
+                <span id="crypto-pay-label">Pay with OKX Wallet</span>
+              </button>
+              <p id="crypto-note" class="fine-print"></p>
+            </div>
           </div>
         </article>
       </section>

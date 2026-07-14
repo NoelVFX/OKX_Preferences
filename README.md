@@ -24,9 +24,9 @@ It repackages the original Preferences AI Discord concierge into a browser + Dis
    - custom product-market-fit survey
    - saved survey dashboard asset
    - optional digital population simulation
-4. Stripe Checkout sells the full report/dashboard unlock.
+4. Stripe Checkout — or the OKX Wallet (USDT on X Layer) — sells the full report/dashboard unlock.
 5. After payment, the user receives unlocked Preferences AI dashboard links.
-6. On the unlocked page, the user can pay for a second add-on: Hermes Agent generates an investor pitch deck (`.pptx`) from the validation preview and Preferences AI simulation data, downloadable immediately after payment.
+6. On the unlocked page, the user can pay for a second add-on (again via Stripe or OKX Wallet): Hermes Agent generates an investor pitch deck (`.pptx`) from the validation preview and Preferences AI simulation data, downloadable once the simulation completes.
 
 ## Why it is a real-world ASP
 
@@ -35,14 +35,15 @@ Many builders have ideas but do not know who will buy, what objections matter, o
 - Input: product/startup/workflow concept
 - Agent work: market framing, audience segmentation, survey generation, simulation setup
 - Output: validation preview + survey/simulation dashboard links + optional Hermes Agent investor pitch deck
-- Monetization: Stripe-paid unlock, plus a Stripe-paid pitch deck add-on
+- Monetization: unlock + pitch deck add-on, each payable by Stripe Checkout or OKX Wallet (USDT on X Layer)
 - Delivery: web UI and Discord command
 
 ## Main files
 
 - `public/index.html` — standalone landing page
 - `public/app.js` — browser workflow and status/result rendering
-- `server.js` — Express API, Hermes preview, Preferences AI provisioning, Stripe Checkout, unlock pages, pitch deck generation, webhook handler
+- `public/crypto-pay.js` — vanilla OKX Wallet (EIP-1193) connect + USDT payment helper, shared by the unlock and pitch-deck flows
+- `server.js` — Express API, Hermes preview, Preferences AI provisioning, Stripe Checkout, OKX Wallet on-chain payment verification, unlock pages, pitch deck generation, webhook handler
 - `agent_coordinator.py` — Discord concierge flow for slash-command usage
 - `tests/*.mjs` — Node regression tests for frontend copy, Hermes prompt shape, provisioning behavior, and pitch deck generation
 - `tests/test_preferencesai_simulation_payload.py` — Python payload tests for the Discord coordinator
@@ -58,6 +59,26 @@ After the base unlock is paid, the `/success` page offers a second Stripe Checko
 4. `GET /api/session/:validationId/pitch-deck/download` renders the cached deck content into a real `.pptx` with [pptxgenjs](https://www.npmjs.com/package/pptxgenjs) (regenerating on the fly if no cached content exists yet). If Hermes ever fails, the deck falls back to a deterministic outline built from the existing validation preview, so the paid deliverable is never blocked by an LLM outage.
 
 The download and status links carry the Stripe `deck_session_id` as a fallback so they still work even if the in-memory/`/tmp` session was evicted between payment and download on Vercel — the same resilience pattern the base unlock already uses for its own checkout recovery.
+
+## OKX Wallet crypto payment (X Layer / USDT)
+
+Alongside Stripe, both the base unlock and the pitch deck add-on can be paid with the **OKX Wallet** browser extension, in **USDT on X Layer** (OKX's L2, chainId 196). This is a vanilla EIP-1193 integration against the injected `window.okxwallet` provider — **no RainbowKit/Wagmi and no React/build step**, because this app is a static Express-served frontend, not a Next.js app.
+
+**Enable it** by setting one required env var to your own receiving wallet address:
+
+```dotenv
+OKX_RECEIVING_ADDRESS=0xYourXLayerWalletAddress
+```
+
+If it is unset (or not a valid address), the crypto option stays hidden and only Stripe is offered — so funds are never sent to a placeholder. Everything else has working, live-verified X Layer defaults (USDT `0x1E4a5963aBFD975d8c9021ce480b42188849D41d`, 6 decimals, RPC `https://rpc.xlayer.tech`); see `.env.example` for the optional overrides. The USDT price is derived from `WEB_PRICE_CENTS` / `WEB_PITCH_DECK_PRICE_CENTS` (e.g. `999` → `9.99 USDT`).
+
+**Flow:**
+
+1. `GET /api/crypto/config` returns the public (non-secret) chain/token/amount config the frontend needs. `public/crypto-pay.js` connects the wallet (`eth_requestAccounts`), switches/adds X Layer if needed, and sends a USDT `transfer(...)` to `OKX_RECEIVING_ADDRESS`.
+2. The frontend posts the transaction hash to `POST /api/session/:validationId/crypto/verify` (unlock) or `POST /api/session/:validationId/pitch-deck/crypto/verify` (pitch deck).
+3. The server **verifies on-chain via RPC** — it never trusts the client's claim. It confirms the transaction succeeded, has the configured number of confirmations, and contains a USDT `Transfer` **log to your address for at least the required amount**, then marks the session paid. A used-transaction guard (`used_crypto_txs.json`) prevents replaying one payment for multiple unlocks. Endpoints return `202` while the tx is still confirming, so the frontend polls until it lands.
+
+**Security notes / limitations:** verification is on-chain and provider-agnostic (any X Layer RPC), but the replay guard and paid state live in the same file-based session store the rest of the app uses, so on Vercel's ephemeral `/tmp` they are best-effort across cold instances (fine for an MVP; use a shared DB/KV for production hardening). Always verify the USDT contract address on the [X Layer explorer](https://www.oklink.com/xlayer) before changing chains or tokens.
 
 ## Local setup
 
@@ -88,6 +109,10 @@ WEB_PRICE_CURRENCY=usd
 # Pitch deck add-on, sold on the unlocked /success page after the base unlock
 WEB_PITCH_DECK_PRODUCT_NAME="Preferences ASP Concierge Investor Pitch Deck"
 WEB_PITCH_DECK_PRICE_CENTS=999
+
+# OKX Wallet crypto payment (X Layer / USDT). Set your own receiving address to
+# enable it; leave unset to keep only Stripe. See "OKX Wallet crypto payment".
+OKX_RECEIVING_ADDRESS=0xYourXLayerWalletAddress
 
 # Hermes preview generation
 HERMES_PREVIEW_USE_CLI=1

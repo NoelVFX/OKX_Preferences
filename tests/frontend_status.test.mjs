@@ -15,7 +15,9 @@ test('landing page is a standalone MVP without hackathon affiliation copy', () =
   const html = fs.readFileSync(path.join(process.cwd(), 'public', 'index.html'), 'utf8');
   assert.match(html, /Preferences ASP Concierge/);
   assert.match(html, /Agent Service Provider/);
-  assert.doesNotMatch(html, /OKX/i);
+  // OKX Wallet is an intentional payment method; only hackathon campaign
+  // branding must stay out.
+  assert.match(html, /OKX Wallet/);
   assert.doesNotMatch(html, /#OKXAI/i);
   assert.doesNotMatch(html, /Hackathon/i);
   assert.doesNotMatch(html, /Build X/i);
@@ -23,9 +25,9 @@ test('landing page is a standalone MVP without hackathon affiliation copy', () =
 });
 
 test('browser status copy is standalone and not campaign-branded', () => {
-  assert.doesNotMatch(appJs, /OKX/i);
   assert.doesNotMatch(appJs, /#OKXAI/i);
   assert.doesNotMatch(appJs, /Hackathon/i);
+  assert.doesNotMatch(appJs, /Build X/i);
   assert.match(appJs, /Generating ASP positioning/);
 });
 

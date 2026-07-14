@@ -1,3 +1,44 @@
+import { getCryptoConfig, getOkxProvider, payAndVerify } from '/crypto-pay.js';
+
+function showToast(kind, title, message) {
+  const stack = document.querySelector('#toast-stack');
+  if (!stack) return;
+  const toast = document.createElement('div');
+  toast.className = `toast ${kind}`;
+  toast.innerHTML = '<div><strong></strong><p></p></div><button type="button" class="toast-close" aria-label="Dismiss">✕</button>';
+  toast.querySelector('strong').textContent = title;
+  toast.querySelector('p').textContent = message || '';
+  stack.appendChild(toast);
+  const dismiss = () => {
+    toast.classList.add('leaving');
+    toast.addEventListener('animationend', () => toast.remove(), { once: true });
+  };
+  toast.querySelector('.toast-close').addEventListener('click', dismiss);
+  setTimeout(dismiss, 7000);
+}
+
+function launchConfetti() {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const layer = document.createElement('div');
+  layer.className = 'confetti-layer';
+  document.body.appendChild(layer);
+  const colors = ['#8f7cff', '#36e7c4', '#ffd166', '#58f29b', '#b8ff6a'];
+  for (let i = 0; i < 60; i++) {
+    const piece = document.createElement('span');
+    piece.className = 'confetti-piece';
+    const size = 6 + Math.random() * 6;
+    piece.style.width = `${size}px`;
+    piece.style.height = `${size * 0.4}px`;
+    piece.style.left = `${Math.random() * 100}vw`;
+    piece.style.background = colors[i % colors.length];
+    piece.style.animationDuration = `${2.2 + Math.random() * 1.6}s`;
+    piece.style.animationDelay = `${Math.random() * 0.4}s`;
+    layer.appendChild(piece);
+  }
+  setTimeout(() => layer.remove(), 4200);
+}
+
+/* ---------- Poll simulation → deck readiness (in-progress state) ---------- */
 const panel = document.querySelector('#pitch-deck-panel[data-status-url]');
 if (panel) {
   const statusUrl = panel.dataset.statusUrl;
@@ -5,44 +46,6 @@ if (panel) {
   const progressFill = document.querySelector('#deck-progress-fill');
   const statusText = document.querySelector('#deck-status-text');
   let pollTimer;
-
-  function showToast(kind, title, message) {
-    const stack = document.querySelector('#toast-stack');
-    if (!stack) return;
-    const toast = document.createElement('div');
-    toast.className = `toast ${kind}`;
-    toast.innerHTML = '<div><strong></strong><p></p></div><button type="button" class="toast-close" aria-label="Dismiss">✕</button>';
-    toast.querySelector('strong').textContent = title;
-    toast.querySelector('p').textContent = message || '';
-    stack.appendChild(toast);
-    const dismiss = () => {
-      toast.classList.add('leaving');
-      toast.addEventListener('animationend', () => toast.remove(), { once: true });
-    };
-    toast.querySelector('.toast-close').addEventListener('click', dismiss);
-    setTimeout(dismiss, 7000);
-  }
-
-  function launchConfetti() {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const layer = document.createElement('div');
-    layer.className = 'confetti-layer';
-    document.body.appendChild(layer);
-    const colors = ['#8f7cff', '#36e7c4', '#ffd166', '#58f29b', '#b8ff6a'];
-    for (let i = 0; i < 60; i++) {
-      const piece = document.createElement('span');
-      piece.className = 'confetti-piece';
-      const size = 6 + Math.random() * 6;
-      piece.style.width = `${size}px`;
-      piece.style.height = `${size * 0.4}px`;
-      piece.style.left = `${Math.random() * 100}vw`;
-      piece.style.background = colors[i % colors.length];
-      piece.style.animationDuration = `${2.2 + Math.random() * 1.6}s`;
-      piece.style.animationDelay = `${Math.random() * 0.4}s`;
-      layer.appendChild(piece);
-    }
-    setTimeout(() => layer.remove(), 4200);
-  }
 
   function markReady() {
     clearInterval(pollTimer);
@@ -76,4 +79,58 @@ if (panel) {
 
   poll();
   pollTimer = setInterval(poll, 7000);
+}
+
+/* ---------- OKX Wallet crypto payment for the pitch deck (pay state) ---------- */
+const deckCryptoBtn = document.querySelector('#deck-crypto-pay');
+if (deckCryptoBtn) {
+  const validationId = deckCryptoBtn.dataset.validationId;
+  const label = document.querySelector('#deck-crypto-label');
+  const note = document.querySelector('#deck-crypto-note');
+  let busy = false;
+
+  (async () => {
+    try {
+      const cfg = await getCryptoConfig();
+      if (!cfg.enabled) { deckCryptoBtn.classList.add('hidden'); return; }
+      if (note) note.textContent = getOkxProvider()
+        ? `Sends ${cfg.pitch_deck.amount_display} on ${cfg.chain_name} to generate your pitch deck.`
+        : 'Install the OKX Wallet browser extension to pay with crypto.';
+    } catch (error) {
+      console.debug('Crypto config unavailable:', error);
+    }
+  })();
+
+  deckCryptoBtn.addEventListener('click', async () => {
+    if (busy) return;
+    if (!getOkxProvider()) {
+      showToast('error', 'OKX Wallet not found', 'Install the OKX Wallet browser extension, then reload this page.');
+      return;
+    }
+    busy = true;
+    deckCryptoBtn.disabled = true;
+    const restore = label ? label.textContent : '';
+    try {
+      const cfg = await getCryptoConfig();
+      const { result } = await payAndVerify({
+        cfg,
+        amountBaseUnits: cfg.pitch_deck.amount_base_units,
+        verifyUrl: `/api/session/${encodeURIComponent(validationId)}/pitch-deck/crypto/verify`,
+        onStatus: (msg) => { if (note) note.textContent = msg; if (label) label.textContent = 'Processing…'; }
+      });
+      if (result.paid) {
+        showToast('success', 'Payment confirmed', 'Your USDT payment was verified on-chain. Preparing your pitch deck…');
+        window.location.href = `/success?validation_id=${encodeURIComponent(validationId)}`;
+      }
+    } catch (error) {
+      const message = error?.code === 4001 ? 'Payment request was rejected in OKX Wallet.' : (error?.message || 'Crypto payment failed.');
+      console.debug('Deck crypto payment error:', error);
+      showToast('error', 'Crypto payment failed', message);
+      if (note) note.textContent = message;
+      if (label) label.textContent = restore;
+    } finally {
+      busy = false;
+      deckCryptoBtn.disabled = false;
+    }
+  });
 }

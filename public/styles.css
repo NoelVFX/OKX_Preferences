@@ -198,6 +198,40 @@ button:active:not(:disabled), .button-link:not(.disabled):active { transform: tr
 button:disabled { cursor: wait; opacity: 0.72; }
 .button-link.disabled { pointer-events: none; opacity: 0.5; filter: grayscale(1); }
 
+/* OKX Wallet crypto payment */
+.crypto-pay.hidden { display: none !important; }
+.pay-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 12px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 800;
+}
+.pay-divider::before, .pay-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.okx-btn {
+  width: 100%;
+  color: #f7f8ff;
+  background: linear-gradient(135deg, #1a1c2e, #050608);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.4);
+}
+.okx-btn:hover:not(:disabled) { box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55); }
+.okx-glyph {
+  font-size: 1.15rem;
+  line-height: 1;
+  color: var(--accent-2);
+  transform: rotate(0deg);
+}
+
 .ripple {
   position: absolute;
   border-radius: 50%;

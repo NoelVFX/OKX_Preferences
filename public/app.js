@@ -1,3 +1,5 @@
+import { getCryptoConfig, getOkxProvider, payAndVerify } from '/crypto-pay.js';
+
 const form = document.querySelector('#validate-form');
 const submitButton = document.querySelector('#submit-button');
 const statusCard = document.querySelector('#status-card');
@@ -350,6 +352,8 @@ function render(data) {
     checkoutNote.textContent = data.checkout_error || 'Set STRIPE_SECRET_KEY to enable paid unlock links.';
   }
 
+  setupCryptoUnlock();
+
   if (data.live_status === 'created') {
     launchConfetti();
     showToast('success', 'ASP assets ready', 'Preferences AI survey and simulation resources were provisioned successfully.');
@@ -358,6 +362,67 @@ function render(data) {
   }
 
   result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/* ---------- OKX Wallet crypto unlock ---------- */
+const cryptoPanel = document.querySelector('#crypto-pay');
+const cryptoPayBtn = document.querySelector('#crypto-pay-btn');
+const cryptoPayLabel = document.querySelector('#crypto-pay-label');
+const cryptoNote = document.querySelector('#crypto-note');
+let cryptoConfig = null;
+let cryptoBusy = false;
+
+async function setupCryptoUnlock() {
+  if (!cryptoPanel) return;
+  try {
+    cryptoConfig = cryptoConfig || await getCryptoConfig();
+  } catch (error) {
+    console.debug('Crypto config unavailable:', error);
+    return;
+  }
+  if (!cryptoConfig.enabled) {
+    cryptoPanel.classList.add('hidden');
+    return;
+  }
+  cryptoPanel.classList.remove('hidden');
+  cryptoPayLabel.textContent = `Pay ${cryptoConfig.unlock.amount_display} with OKX Wallet`;
+  cryptoNote.textContent = getOkxProvider()
+    ? `Sends ${cryptoConfig.unlock.amount_display} on ${cryptoConfig.chain_name} to unlock your dashboard.`
+    : 'Install the OKX Wallet browser extension to pay with crypto.';
+}
+
+if (cryptoPayBtn) {
+  cryptoPayBtn.addEventListener('click', async () => {
+    if (cryptoBusy || !currentValidationId || !cryptoConfig?.enabled) return;
+    if (!getOkxProvider()) {
+      showToast('error', 'OKX Wallet not found', 'Install the OKX Wallet browser extension, then reload this page.');
+      return;
+    }
+    cryptoBusy = true;
+    cryptoPayBtn.disabled = true;
+    const restoreLabel = cryptoPayLabel.textContent;
+    try {
+      const { result } = await payAndVerify({
+        cfg: cryptoConfig,
+        amountBaseUnits: cryptoConfig.unlock.amount_base_units,
+        verifyUrl: `/api/session/${encodeURIComponent(currentValidationId)}/crypto/verify`,
+        onStatus: (msg) => { cryptoNote.textContent = msg; cryptoPayLabel.textContent = 'Processing…'; }
+      });
+      if (result.paid) {
+        showToast('success', 'Payment confirmed', 'Your USDT payment was verified on-chain. Unlocking your dashboard…');
+        window.location.href = `/success?validation_id=${encodeURIComponent(currentValidationId)}`;
+      }
+    } catch (error) {
+      const message = error?.code === 4001 ? 'Payment request was rejected in OKX Wallet.' : (error?.message || 'Crypto payment failed.');
+      console.debug('Crypto unlock error:', error);
+      showToast('error', 'Crypto payment failed', message);
+      cryptoNote.textContent = message;
+      cryptoPayLabel.textContent = restoreLabel;
+    } finally {
+      cryptoBusy = false;
+      cryptoPayBtn.disabled = false;
+    }
+  });
 }
 
 form.addEventListener('submit', async (event) => {

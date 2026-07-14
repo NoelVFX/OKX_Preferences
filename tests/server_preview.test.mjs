@@ -12,6 +12,11 @@ process.env.PREFERENCES_AI_API_KEY = 'test-preferences-key';
 process.env.STRIPE_SECRET_KEY = '';
 process.env.HERMES_PREVIEW_USE_CLI = '1';
 
+// OKX Wallet crypto payment test config (enables CRYPTO_PAYMENTS_ENABLED).
+const CRYPTO_RECIPIENT = '0x1111111111111111111111111111111111111111';
+process.env.OKX_RECEIVING_ADDRESS = CRYPTO_RECIPIENT;
+process.env.WEB_CRYPTO_TX_STORE_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'preferences-crypto-tx-')), 'used.json');
+
 const server = await import('../server.js');
 
 test('Vercel can import the Express app as the default serverless export', () => {
@@ -944,5 +949,144 @@ test('checkPitchDeckReadiness keeps waiting (does not generate) when the live st
   });
 
   assert.equal(status.deck_ready, false);
+});
+
+// ---------------------------------------------------------------------------
+// OKX Wallet (X Layer) crypto payment verification
+// ---------------------------------------------------------------------------
+
+const USDT_CONTRACT = '0x1e4a5963abfd975d8c9021ce480b42188849d41d';
+const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const PAYER = '0x2222222222222222222222222222222222222222';
+
+function addrTopic(addr) {
+  return `0x${addr.replace(/^0x/, '').toLowerCase().padStart(64, '0')}`;
+}
+function amountData(baseUnits) {
+  return `0x${BigInt(baseUnits).toString(16).padStart(64, '0')}`;
+}
+function transferLog({ contract = USDT_CONTRACT, from = PAYER, to = CRYPTO_RECIPIENT, value }) {
+  return { address: contract, topics: [TRANSFER_TOPIC, addrTopic(from), addrTopic(to)], data: amountData(value) };
+}
+function mockRpc({ receipt, head = '0x1000' }) {
+  return async (method) => {
+    if (method === 'eth_getTransactionReceipt') return receipt;
+    if (method === 'eth_blockNumber') return head;
+    throw new Error(`unexpected rpc call: ${method}`);
+  };
+}
+const GOOD_TX = `0x${'a'.repeat(64)}`;
+
+test('cryptoConfigForClient exposes enabled config with correct USDT base-unit amounts (never secrets)', () => {
+  const cfg = server.cryptoConfigForClient();
+  assert.equal(cfg.enabled, true);
+  assert.equal(cfg.chain_id, 196);
+  assert.equal(cfg.chain_id_hex, '0xc4');
+  assert.equal(cfg.receiving_address, CRYPTO_RECIPIENT);
+  assert.equal(cfg.token_decimals, 6);
+  // $9.99 at 6 decimals = 9,990,000 base units.
+  assert.equal(cfg.unlock.amount_base_units, '9990000');
+  assert.equal(cfg.unlock.amount_display, '9.99 USDT');
+  assert.equal(cfg.pitch_deck.amount_base_units, '9990000');
+});
+
+test('usdtBaseUnits converts cents to 6-decimal base units without float drift', () => {
+  assert.equal(server.usdtBaseUnits(999), '9990000');
+  assert.equal(server.usdtBaseUnits(500), '5000000');
+  assert.equal(server.usdtBaseUnits(1), '10000');
+});
+
+test('verifyUsdtPayment confirms a matching USDT transfer to the receiving address', async () => {
+  const receipt = { status: '0x1', blockNumber: '0xff0', logs: [transferLog({ value: '9990000' })] };
+  const result = await server.verifyUsdtPayment(GOOD_TX, '9990000', { rpc: mockRpc({ receipt }) });
+  assert.equal(result.status, 'confirmed');
+  assert.equal(result.from, PAYER);
+  assert.equal(result.value, '9990000');
+});
+
+test('verifyUsdtPayment accepts an overpayment (value greater than required)', async () => {
+  const receipt = { status: '0x1', blockNumber: '0xff0', logs: [transferLog({ value: '20000000' })] };
+  const result = await server.verifyUsdtPayment(GOOD_TX, '9990000', { rpc: mockRpc({ receipt }) });
+  assert.equal(result.status, 'confirmed');
+});
+
+test('verifyUsdtPayment returns pending when the transaction is not mined yet', async () => {
+  const result = await server.verifyUsdtPayment(GOOD_TX, '9990000', { rpc: mockRpc({ receipt: null }) });
+  assert.equal(result.status, 'pending');
+});
+
+test('verifyUsdtPayment fails a reverted transaction', async () => {
+  const receipt = { status: '0x0', blockNumber: '0xff0', logs: [] };
+  const result = await server.verifyUsdtPayment(GOOD_TX, '9990000', { rpc: mockRpc({ receipt }) });
+  assert.equal(result.status, 'failed');
+  assert.match(result.reason, /failed on-chain/);
+});
+
+test('verifyUsdtPayment fails when the transfer went to a different recipient', async () => {
+  const receipt = { status: '0x1', blockNumber: '0xff0', logs: [transferLog({ to: '0x9999999999999999999999999999999999999999', value: '9990000' })] };
+  const result = await server.verifyUsdtPayment(GOOD_TX, '9990000', { rpc: mockRpc({ receipt }) });
+  assert.equal(result.status, 'failed');
+});
+
+test('verifyUsdtPayment fails when the transfer was a different token contract', async () => {
+  const receipt = { status: '0x1', blockNumber: '0xff0', logs: [transferLog({ contract: '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef', value: '9990000' })] };
+  const result = await server.verifyUsdtPayment(GOOD_TX, '9990000', { rpc: mockRpc({ receipt }) });
+  assert.equal(result.status, 'failed');
+});
+
+test('verifyUsdtPayment fails when the amount is below the required price', async () => {
+  const receipt = { status: '0x1', blockNumber: '0xff0', logs: [transferLog({ value: '9989999' })] };
+  const result = await server.verifyUsdtPayment(GOOD_TX, '9990000', { rpc: mockRpc({ receipt }) });
+  assert.equal(result.status, 'failed');
+});
+
+test('verifyUsdtPayment fails a malformed transaction hash without calling the RPC', async () => {
+  const result = await server.verifyUsdtPayment('not-a-hash', '9990000', { rpc: async () => { throw new Error('should not be called'); } });
+  assert.equal(result.status, 'failed');
+});
+
+test('verifyCryptoUnlock marks a session paid after a confirmed on-chain payment', async () => {
+  const validationId = 'crypto-unlock-test-1';
+  server.saveWebSession({ validation_id: validationId, pitch: 'AI concierge for clinics', preview: server.buildPreviewReport('AI concierge for clinics') });
+  const receipt = { status: '0x1', blockNumber: '0xff0', logs: [transferLog({ value: '9990000' })] };
+
+  const result = await server.verifyCryptoUnlock(validationId, GOOD_TX, { rpc: mockRpc({ receipt }) });
+  assert.equal(result.status, 'confirmed');
+  const saved = server.getWebSession(validationId);
+  assert.equal(saved.paid, true);
+  assert.equal(saved.payment_method, 'okx_crypto');
+  assert.equal(saved.crypto_tx_hash, GOOD_TX);
+});
+
+test('verifyCryptoUnlock rejects replaying the same tx hash for a different validation', async () => {
+  const otherValidation = 'crypto-unlock-test-2';
+  server.saveWebSession({ validation_id: otherValidation, pitch: 'Another idea', preview: server.buildPreviewReport('Another idea') });
+  const receipt = { status: '0x1', blockNumber: '0xff0', logs: [transferLog({ value: '9990000' })] };
+
+  await assert.rejects(
+    () => server.verifyCryptoUnlock(otherValidation, GOOD_TX, { rpc: mockRpc({ receipt }) }),
+    /already been used/
+  );
+  assert.notEqual(server.getWebSession(otherValidation).paid, true);
+});
+
+test('verifyCryptoUnlock returns pending (does not mark paid) while the tx is unconfirmed', async () => {
+  const validationId = 'crypto-unlock-pending';
+  server.saveWebSession({ validation_id: validationId, pitch: 'Pending idea', preview: server.buildPreviewReport('Pending idea') });
+  const result = await server.verifyCryptoUnlock(validationId, `0x${'b'.repeat(64)}`, { rpc: mockRpc({ receipt: null }) });
+  assert.equal(result.status, 'pending');
+  assert.notEqual(server.getWebSession(validationId).paid, true);
+});
+
+test('verifyPitchDeckCryptoPaid marks the pitch deck paid after a confirmed payment', async () => {
+  const validationId = 'crypto-deck-test-1';
+  server.saveWebSession({ validation_id: validationId, pitch: 'Deck idea', preview: server.buildPreviewReport('Deck idea'), paid: true });
+  const receipt = { status: '0x1', blockNumber: '0xff0', logs: [transferLog({ value: '9990000' })] };
+
+  const result = await server.verifyPitchDeckCryptoPaid(validationId, `0x${'c'.repeat(64)}`, { rpc: mockRpc({ receipt }) });
+  assert.equal(result.status, 'confirmed');
+  const saved = server.getWebSession(validationId);
+  assert.equal(saved.pitch_deck_paid, true);
+  assert.equal(saved.pitch_deck_payment_method, 'okx_crypto');
 });
 

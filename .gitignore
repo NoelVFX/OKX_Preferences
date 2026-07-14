@@ -10,6 +10,7 @@ node_modules/
 # runtime/generated state
 active_session.json
 web_sessions.json
+used_crypto_txs.json
 .hermes_revert_backup_*/
 __pycache__/
 *.py[cod]

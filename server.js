@@ -48,6 +48,38 @@ const WEB_PRICE_CURRENCY = process.env.WEB_PRICE_CURRENCY || 'usd';
 const WEB_PRODUCT_NAME = process.env.WEB_PRODUCT_NAME || 'Preferences ASP Concierge Unlock';
 const WEB_PITCH_DECK_PRICE_CENTS = Number(process.env.WEB_PITCH_DECK_PRICE_CENTS || WEB_PRICE_CENTS);
 const WEB_PITCH_DECK_PRODUCT_NAME = process.env.WEB_PITCH_DECK_PRODUCT_NAME || 'Preferences ASP Concierge Investor Pitch Deck';
+
+// --- OKX Wallet (X Layer) crypto payment config ---
+// Defaults verified against the live X Layer chain: chainId 196 (0xc4), and
+// USDT at 0x1E4a5963aBFD975d8c9021ce480b42188849D41d reports symbol "USDT",
+// decimals 6. The receiving address is intentionally NOT defaulted: without it
+// the crypto option stays disabled, so funds are never sent to a placeholder.
+const OKX_RECEIVING_ADDRESS = (process.env.OKX_RECEIVING_ADDRESS || '').trim().toLowerCase();
+const OKX_CHAIN_ID = Number(process.env.OKX_CHAIN_ID || 196);
+const OKX_CHAIN_ID_HEX = `0x${OKX_CHAIN_ID.toString(16)}`;
+const OKX_CHAIN_NAME = process.env.OKX_CHAIN_NAME || 'X Layer';
+const OKX_RPC_URL = process.env.OKX_RPC_URL || 'https://rpc.xlayer.tech';
+const OKX_BLOCK_EXPLORER_URL = process.env.OKX_BLOCK_EXPLORER_URL || 'https://www.oklink.com/xlayer';
+const OKX_NATIVE_CURRENCY = process.env.OKX_NATIVE_CURRENCY || 'OKB';
+const OKX_USDT_CONTRACT = (process.env.OKX_USDT_CONTRACT || '0x1E4a5963aBFD975d8c9021ce480b42188849D41d').trim().toLowerCase();
+const OKX_USDT_DECIMALS = Number(process.env.OKX_USDT_DECIMALS || 6);
+const OKX_USDT_SYMBOL = process.env.OKX_USDT_SYMBOL || 'USDT';
+const OKX_MIN_CONFIRMATIONS = Number(process.env.OKX_MIN_CONFIRMATIONS || 1);
+const OKX_REQUEST_TIMEOUT = Number(process.env.OKX_REQUEST_TIMEOUT || 20) * 1000;
+const CRYPTO_PAYMENTS_ENABLED = Boolean(OKX_RECEIVING_ADDRESS && /^0x[0-9a-f]{40}$/.test(OKX_RECEIVING_ADDRESS) && OKX_USDT_CONTRACT);
+
+// ERC-20 transfer(address,uint256) selector and Transfer(address,address,uint256) event topic.
+const ERC20_TRANSFER_SELECTOR = '0xa9059cbb';
+const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+
+// Token base units for a fiat cent amount, as a decimal string. $9.99 with 6
+// decimals => 9,990,000. Uses BigInt so there is never floating-point drift.
+function usdtBaseUnits(cents) {
+  return (BigInt(Math.round(Number(cents) || 0)) * (10n ** BigInt(OKX_USDT_DECIMALS)) / 100n).toString();
+}
+function centsToUsdtDisplay(cents) {
+  return `${((Number(cents) || 0) / 100).toFixed(2)} ${OKX_USDT_SYMBOL}`;
+}
 const SESSION_STORE_PATH = process.env.WEB_SESSION_STORE_PATH || path.join(RUNTIME_WRITABLE_DIR, 'web_sessions.json');
 const ACTIVE_MANIFEST_PATH = process.env.MANIFEST_PATH || path.join(RUNTIME_WRITABLE_DIR, 'active_session.json');
 const STATIC_DIR = path.join(__dirname, 'public');
@@ -76,6 +108,11 @@ if (!PREFERENCES_API_KEY) {
 }
 if (!stripe) {
   console.warn('⚠️ STRIPE_SECRET_KEY is not set; paid web unlock checkout links cannot be created.');
+}
+if (CRYPTO_PAYMENTS_ENABLED) {
+  console.log(`OKX Wallet crypto payments enabled: ${OKX_CHAIN_NAME} (chainId ${OKX_CHAIN_ID}), ${OKX_USDT_SYMBOL} ${OKX_USDT_CONTRACT} → ${OKX_RECEIVING_ADDRESS}`);
+} else {
+  console.warn('⚠️ OKX_RECEIVING_ADDRESS is not set (or invalid); OKX Wallet crypto payments are disabled. Set it to your X Layer wallet address to enable them.');
 }
 if (!DISCORD_WEBHOOK_URL) {
   console.warn('⚠️ DISCORD_WEBHOOK_URL is not set; Stripe webhook Discord unlock delivery is disabled unless DISCORD_BOT_TOKEN + metadata channel/user is present.');
@@ -1442,6 +1479,152 @@ async function verifyPitchDeckPaid(validationId, deckCheckoutSessionId, { retrie
   });
 }
 
+// ---------------------------------------------------------------------------
+// OKX Wallet (X Layer) crypto payment verification
+// ---------------------------------------------------------------------------
+
+function cryptoConfigForClient() {
+  return {
+    enabled: CRYPTO_PAYMENTS_ENABLED,
+    chain_id: OKX_CHAIN_ID,
+    chain_id_hex: OKX_CHAIN_ID_HEX,
+    chain_name: OKX_CHAIN_NAME,
+    rpc_url: OKX_RPC_URL,
+    block_explorer_url: OKX_BLOCK_EXPLORER_URL,
+    native_currency: OKX_NATIVE_CURRENCY,
+    receiving_address: OKX_RECEIVING_ADDRESS,
+    token_contract: OKX_USDT_CONTRACT,
+    token_symbol: OKX_USDT_SYMBOL,
+    token_decimals: OKX_USDT_DECIMALS,
+    unlock: { amount_base_units: usdtBaseUnits(WEB_PRICE_CENTS), amount_display: centsToUsdtDisplay(WEB_PRICE_CENTS) },
+    pitch_deck: { amount_base_units: usdtBaseUnits(WEB_PITCH_DECK_PRICE_CENTS), amount_display: centsToUsdtDisplay(WEB_PITCH_DECK_PRICE_CENTS) }
+  };
+}
+
+async function xlayerRpc(method, params, { fetchImpl = fetch } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OKX_REQUEST_TIMEOUT);
+  try {
+    const response = await fetchImpl(OKX_RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      signal: controller.signal
+    });
+    const json = await response.json();
+    if (json.error) throw new Error(`RPC ${method} error: ${json.error.message || JSON.stringify(json.error)}`);
+    return json.result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function topicToAddress(topic) {
+  // A 32-byte topic left-pads a 20-byte address, so the address is the last 40 hex chars.
+  return `0x${String(topic || '').slice(-40).toLowerCase()}`;
+}
+
+// Verifies that txHash is a confirmed on-chain USDT transfer of at least
+// expectedBaseUnits to OKX_RECEIVING_ADDRESS. Returns a discriminated result:
+//   { status: 'pending' }   — not mined / not enough confirmations yet
+//   { status: 'confirmed', from, value } — a matching transfer was found
+//   { status: 'failed', reason } — definitively invalid (wrong token/recipient/amount, reverted tx)
+async function verifyUsdtPayment(txHash, expectedBaseUnits, { rpc = xlayerRpc } = {}) {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(String(txHash || ''))) return { status: 'failed', reason: 'Malformed transaction hash.' };
+
+  const receipt = await rpc('eth_getTransactionReceipt', [txHash]);
+  if (!receipt) return { status: 'pending' };
+  if (receipt.status !== '0x1') return { status: 'failed', reason: 'The transaction failed on-chain.' };
+
+  if (OKX_MIN_CONFIRMATIONS > 0) {
+    const head = Number(await rpc('eth_blockNumber', []));
+    const mined = Number(receipt.blockNumber);
+    if (!Number.isNaN(head) && !Number.isNaN(mined) && head - mined + 1 < OKX_MIN_CONFIRMATIONS) {
+      return { status: 'pending' };
+    }
+  }
+
+  const expected = BigInt(expectedBaseUnits);
+  for (const log of (receipt.logs || [])) {
+    if (String(log.address || '').toLowerCase() !== OKX_USDT_CONTRACT) continue;
+    if (String(log.topics?.[0] || '').toLowerCase() !== ERC20_TRANSFER_TOPIC) continue;
+    const to = topicToAddress(log.topics?.[2]);
+    if (to !== OKX_RECEIVING_ADDRESS) continue;
+    let value;
+    try { value = BigInt(log.data); } catch { continue; }
+    if (value >= expected) {
+      return { status: 'confirmed', from: topicToAddress(log.topics?.[1]), value: value.toString() };
+    }
+  }
+  return { status: 'failed', reason: `No USDT transfer of at least the required amount to the receiving address was found in this transaction.` };
+}
+
+// Best-effort cross-session replay guard. A given on-chain tx can only unlock
+// one thing once. Backed by its own JSON file so it does not pollute the
+// session store. (Vercel /tmp is ephemeral, so this is best-effort there; the
+// per-session paid flag is the primary guard against re-charging the same user.)
+const USED_CRYPTO_TX_PATH = process.env.WEB_CRYPTO_TX_STORE_PATH || path.join(RUNTIME_WRITABLE_DIR, 'used_crypto_txs.json');
+function isCryptoTxUsed(txHash, forClaim) {
+  const used = readJsonFile(USED_CRYPTO_TX_PATH, {})[String(txHash).toLowerCase()];
+  if (!used) return false;
+  // Idempotent re-verification of the same claim (same validation + purpose) is allowed.
+  return !(used.validation_id === forClaim.validation_id && used.purpose === forClaim.purpose);
+}
+function markCryptoTxUsed(txHash, claim) {
+  const store = readJsonFile(USED_CRYPTO_TX_PATH, {});
+  store[String(txHash).toLowerCase()] = { ...claim, at: new Date().toISOString() };
+  writeJsonFile(USED_CRYPTO_TX_PATH, store);
+}
+
+async function verifyCryptoUnlock(validationId, txHash, { rpc = xlayerRpc } = {}) {
+  if (!CRYPTO_PAYMENTS_ENABLED) throw new Error('Crypto payments are not configured on this server.');
+  const session = validationId ? getWebSession(validationId) : null;
+  if (!session) { const e = new Error('Validation session not found.'); e.status = 404; throw e; }
+  if (session.paid) return { status: 'confirmed', session };
+
+  if (isCryptoTxUsed(txHash, { validation_id: validationId, purpose: 'unlock' })) {
+    const e = new Error('This transaction has already been used for another unlock.'); e.status = 409; throw e;
+  }
+
+  const result = await verifyUsdtPayment(txHash, usdtBaseUnits(WEB_PRICE_CENTS), { rpc });
+  if (result.status !== 'confirmed') return result;
+
+  markCryptoTxUsed(txHash, { validation_id: validationId, purpose: 'unlock' });
+  const updated = saveWebSession({
+    validation_id: validationId,
+    paid: true,
+    paid_at: new Date().toISOString(),
+    payment_method: 'okx_crypto',
+    crypto_tx_hash: String(txHash).toLowerCase(),
+    crypto_payer_address: result.from
+  });
+  return { status: 'confirmed', session: updated };
+}
+
+async function verifyPitchDeckCryptoPaid(validationId, txHash, { rpc = xlayerRpc } = {}) {
+  if (!CRYPTO_PAYMENTS_ENABLED) throw new Error('Crypto payments are not configured on this server.');
+  const session = validationId ? getWebSession(validationId) : null;
+  if (!session) { const e = new Error('Validation session not found.'); e.status = 404; throw e; }
+  if (session.pitch_deck_paid) return { status: 'confirmed', session };
+
+  if (isCryptoTxUsed(txHash, { validation_id: validationId, purpose: 'pitch_deck' })) {
+    const e = new Error('This transaction has already been used for another purchase.'); e.status = 409; throw e;
+  }
+
+  const result = await verifyUsdtPayment(txHash, usdtBaseUnits(WEB_PITCH_DECK_PRICE_CENTS), { rpc });
+  if (result.status !== 'confirmed') return result;
+
+  markCryptoTxUsed(txHash, { validation_id: validationId, purpose: 'pitch_deck' });
+  const updated = saveWebSession({
+    validation_id: validationId,
+    pitch_deck_paid: true,
+    pitch_deck_paid_at: new Date().toISOString(),
+    pitch_deck_payment_method: 'okx_crypto',
+    pitch_deck_crypto_tx_hash: String(txHash).toLowerCase()
+  });
+  return { status: 'confirmed', session: updated };
+}
+
 const DECK_ERROR_MESSAGES = {
   checkout_unavailable: 'Could not start pitch deck checkout. Please try again.',
   not_paid: 'We could not verify payment for the pitch deck yet.',
@@ -1500,11 +1683,19 @@ function renderSuccessPage({ session, unlocked, error, pitchDeckUnlocked, pitchD
     </div>`;
     } else {
       const errorNote = pitchDeckError ? `<p class="fine-print">${escapeHtml(friendlyDeckErrorMessage(pitchDeckError))}</p>` : '';
+      const cryptoDeckPay = CRYPTO_PAYMENTS_ENABLED ? `
+      <div class="pay-divider"><span>or pay with crypto</span></div>
+      <button class="button-link okx-btn" id="deck-crypto-pay" type="button" data-validation-id="${validationId}">
+        <span class="okx-glyph" aria-hidden="true">◇</span>
+        <span id="deck-crypto-label">Pay ${escapeHtml(centsToUsdtDisplay(WEB_PITCH_DECK_PRICE_CENTS))} with OKX Wallet</span>
+      </button>
+      <p id="deck-crypto-note" class="fine-print"></p>` : '';
       pitchDeckSection = `
-    <div class="unlock-panel">
+    <div class="unlock-panel" id="pitch-deck-panel">
       <h3>Generate an investor pitch deck</h3>
       <p>Have Hermes Agent turn this validation into a downloadable pitch deck (.pptx) built from your survey and simulation data.</p>
       <a class="button-link" href="/api/session/${validationId}/pitch-deck/checkout">Pay $${(WEB_PITCH_DECK_PRICE_CENTS / 100).toFixed(2)} to generate pitch deck</a>
+      ${cryptoDeckPay}
       ${errorNote}
     </div>`;
     }
@@ -1711,6 +1902,26 @@ app.get('/api/session/:validationId', (req, res) => {
   res.json(publicWebSession(session));
 });
 
+// Public (non-secret) crypto payment config for the OKX Wallet frontend.
+app.get('/api/crypto/config', (req, res) => {
+  res.json(cryptoConfigForClient());
+});
+
+// Verify an OKX Wallet USDT payment for the base survey/simulation unlock.
+app.post('/api/session/:validationId/crypto/verify', async (req, res) => {
+  const validationId = String(req.params.validationId || '');
+  const txHash = String(req.body?.tx_hash || '').trim();
+  try {
+    const result = await verifyCryptoUnlock(validationId, txHash);
+    if (result.status === 'pending') return res.status(202).json({ pending: true, message: 'Waiting for the transaction to confirm on-chain.' });
+    if (result.status === 'failed') return res.status(400).json({ error: result.reason });
+    return res.json({ paid: true, validation_id: validationId });
+  } catch (error) {
+    console.error('⚠️ Crypto unlock verification failed:', error.message);
+    return res.status(error.status || 500).json({ error: error.message });
+  }
+});
+
 app.get('/success', async (req, res) => {
   const validationId = String(req.query.validation_id || '');
   const checkoutSessionId = String(req.query.session_id || '');
@@ -1807,6 +2018,23 @@ app.get('/api/session/:validationId/pitch-deck/status', async (req, res) => {
   }
 });
 
+// Verify an OKX Wallet USDT payment for the pitch deck add-on.
+app.post('/api/session/:validationId/pitch-deck/crypto/verify', async (req, res) => {
+  const validationId = String(req.params.validationId || '');
+  const txHash = String(req.body?.tx_hash || '').trim();
+  try {
+    const result = await verifyPitchDeckCryptoPaid(validationId, txHash);
+    if (result.status === 'pending') return res.status(202).json({ pending: true, message: 'Waiting for the transaction to confirm on-chain.' });
+    if (result.status === 'failed') return res.status(400).json({ error: result.reason });
+    let readiness = null;
+    try { readiness = await checkPitchDeckReadiness(result.session); } catch (err) { console.warn('⚠️ Readiness check after crypto deck payment failed:', err.message); }
+    return res.json({ paid: true, validation_id: validationId, ...(readiness || {}) });
+  } catch (error) {
+    console.error('⚠️ Pitch deck crypto verification failed:', error.message);
+    return res.status(error.status || 500).json({ error: error.message });
+  }
+});
+
 app.get('/api/session/:validationId/pitch-deck/download', async (req, res) => {
   const validationId = String(req.params.validationId || '');
   const deckSessionId = String(req.query.deck_session_id || '');
@@ -1882,5 +2110,11 @@ export {
   extractSimulationInsightHighlights,
   verifyPitchDeckPaid,
   checkPitchDeckReadiness,
-  WEB_PITCH_DECK_PRICE_CENTS
+  WEB_PITCH_DECK_PRICE_CENTS,
+  cryptoConfigForClient,
+  usdtBaseUnits,
+  verifyUsdtPayment,
+  verifyCryptoUnlock,
+  verifyPitchDeckCryptoPaid,
+  CRYPTO_PAYMENTS_ENABLED
 };
