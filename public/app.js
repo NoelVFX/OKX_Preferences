@@ -235,6 +235,31 @@ function launchConfetti() {
   setTimeout(() => layer.remove(), 4200);
 }
 
+/* ---------- Friendly upstream error messaging (raw vendor errors stay in console.debug only) ---------- */
+function classifyUpstreamError(rawError) {
+  const text = String(rawError || '');
+  if (/429|rate limit|quota/i.test(text)) return 'rate_limited';
+  if (/401|403|invalid.*key|api key/i.test(text)) return 'unauthorized';
+  if (/timed out|timeout|ETIMEDOUT|ECONNRESET|ENOTFOUND|certificate/i.test(text)) return 'connectivity';
+  return 'unknown';
+}
+
+function friendlyPreviewErrorMessage(rawError) {
+  const kind = classifyUpstreamError(rawError);
+  if (kind === 'rate_limited') return 'The free AI preview generator is rate-limited right now, so this preview used the local generator instead. Try again in a minute.';
+  if (kind === 'unauthorized') return 'The free AI preview generator is temporarily unavailable, so this preview used the local generator instead.';
+  if (kind === 'connectivity') return 'The free AI preview generator timed out, so this preview used the local generator instead.';
+  return 'The free AI preview generator hit a temporary issue, so this preview used the local generator instead.';
+}
+
+function friendlyProvisioningErrorMessage(rawError) {
+  const kind = classifyUpstreamError(rawError);
+  if (kind === 'rate_limited') return 'Preferences AI is rate-limited right now. Your free preview is saved — retry live provisioning in a minute.';
+  if (kind === 'unauthorized') return 'Preferences AI provisioning is temporarily unavailable. Your free preview is saved — retry live provisioning shortly.';
+  if (kind === 'connectivity') return 'Preferences AI could not be reached. Your free preview is saved — retry live provisioning shortly.';
+  return 'Preferences AI returned a temporary error. Your free preview is saved — retry live provisioning shortly.';
+}
+
 /* ---------- Copy validation id ---------- */
 const copyButton = document.querySelector('#copy-validation-id');
 copyButton.addEventListener('click', async () => {
@@ -288,8 +313,9 @@ function render(data) {
     assetCopy.textContent = data.simulation_message || 'Set PREFERENCES_AI_API_KEY to provision live Preferences AI assets.';
   } else if (data.live_status === 'failed') {
     assetHeading.textContent = 'Preview ready, live provisioning needs attention';
+    if (data.live_error) console.debug('Preferences AI provisioning error:', data.live_error);
     assetCopy.textContent = data.live_error
-      ? `Preferences AI returned a transient error: ${data.live_error.slice(0, 180)}${data.live_error.length > 180 ? '…' : ''}`
+      ? friendlyProvisioningErrorMessage(data.live_error)
       : 'The free preview still works. Retry once the Preferences AI API is healthy.';
   } else {
     assetHeading.textContent = 'Preview generated';
@@ -299,8 +325,9 @@ function render(data) {
   if (data.preview_source === 'hermes_agent' || preview.preview_source === 'hermes_agent') {
     assetCopy.textContent = `${assetCopy.textContent} Free preview source: Hermes Agent.`.trim();
   } else if (data.preview_error || preview.preview_error) {
-    const detail = String(data.preview_error || preview.preview_error).slice(0, 220);
-    assetCopy.textContent = `Free preview used local fallback because Hermes Agent did not return a usable JSON preview: ${detail}${detail.length >= 220 ? '…' : ''}`;
+    const rawError = String(data.preview_error || preview.preview_error);
+    console.debug('Hermes preview generation error (local fallback used):', rawError);
+    assetCopy.textContent = `${assetCopy.textContent} ${friendlyPreviewErrorMessage(rawError)}`.trim();
   }
 
   retryButton.classList.toggle('hidden', data.live_status !== 'failed' || !currentValidationId);

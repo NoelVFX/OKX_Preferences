@@ -31,5 +31,12 @@ test('browser status copy is standalone and not campaign-branded', () => {
 
 test('browser reports whether free preview used Hermes Agent or local fallback', () => {
   assert.match(appJs, /Free preview source: Hermes Agent/);
-  assert.match(appJs, /Free preview used local fallback because Hermes Agent/);
+  assert.match(appJs, /function friendlyPreviewErrorMessage/);
+  assert.match(appJs, /assetCopy\.textContent = `\$\{assetCopy\.textContent\} \$\{friendlyPreviewErrorMessage\(rawError\)\}`/);
+});
+
+test('raw upstream preview/provisioning errors are logged to console.debug, not shown to end users', () => {
+  assert.doesNotMatch(appJs, /assetCopy\.textContent = `Free preview used local fallback because Hermes Agent[\s\S]*?\$\{detail\}/);
+  assert.match(appJs, /console\.debug\('Hermes preview generation error \(local fallback used\):', rawError\)/);
+  assert.match(appJs, /console\.debug\('Preferences AI provisioning error:', data\.live_error\)/);
 });
