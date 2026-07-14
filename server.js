@@ -1212,6 +1212,8 @@ async function createCheckoutSession(validationSession, req = null) {
 async function createPitchDeckCheckoutSession(validationSession, req = null) {
   if (!stripe) return null;
   const checkoutBaseUrl = publicBaseUrl(req);
+  const baseSessionId = validationSession.stripe_checkout_session_id || '';
+  const baseSessionQuery = baseSessionId ? `&session_id=${encodeURIComponent(baseSessionId)}` : '';
   const session = await stripe.checkout.sessions.create({
     mode: 'payment',
     locale: 'en',
@@ -1223,12 +1225,17 @@ async function createPitchDeckCheckoutSession(validationSession, req = null) {
       },
       quantity: 1
     }],
-    success_url: `${checkoutBaseUrl}/success?validation_id=${validationSession.validation_id}&deck_session_id={CHECKOUT_SESSION_ID}`,
+    success_url: `${checkoutBaseUrl}/success?validation_id=${validationSession.validation_id}${baseSessionQuery}&deck_session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${checkoutBaseUrl}/success?validation_id=${validationSession.validation_id}`,
     metadata: {
       product: 'pitch_deck',
       validation_id: validationSession.validation_id,
-      pitch: validationSession.pitch.slice(0, 500)
+      pitch: validationSession.pitch.slice(0, 500),
+      base_session_id: baseSessionId,
+      survey_id: validationSession.survey_id || '',
+      simulation_id: validationSession.simulation_id || '',
+      simulation_status: validationSession.simulation_status || '',
+      live_status: validationSession.live_status || ''
     }
   });
   return session;
@@ -1396,6 +1403,15 @@ async function verifyPitchDeckPaid(validationId, deckCheckoutSessionId, { retrie
     pitch,
     preview: buildPreviewReport(pitch),
     pitch_category: buildPreviewReport(pitch).pitch_category,
+    survey_id: checkoutSession.metadata?.survey_id || '',
+    simulation_id: checkoutSession.metadata?.simulation_id || '',
+    survey_url: checkoutSession.metadata?.survey_id ? `https://dashboard.preferencesai.io/surveys/${checkoutSession.metadata.survey_id}` : '',
+    simulation_url: checkoutSession.metadata?.simulation_id ? `https://dashboard.preferencesai.io/simulations/${checkoutSession.metadata.simulation_id}` : '',
+    simulation_status: checkoutSession.metadata?.simulation_status || (checkoutSession.metadata?.simulation_id ? 'launched' : 'not_available'),
+    live_status: checkoutSession.metadata?.live_status || 'unknown',
+    paid: true,
+    paid_at: new Date().toISOString(),
+    stripe_checkout_session_id: checkoutSession.metadata?.base_session_id || '',
     ...paidFields
   });
 }
@@ -1676,17 +1692,29 @@ app.get('/success', async (req, res) => {
   let session = validationId ? getWebSession(validationId) : null;
   let unlocked = false;
   let error = '';
+  let pitchDeckUnlocked = false;
+  let pitchDeckError = '';
+  let pitchDeckReady = false;
+  let pitchDeckStatus = null;
   try {
     session = await verifyPaidUnlock(validationId, checkoutSessionId);
     unlocked = true;
   } catch (err) {
     error = err.message;
+    // A paid, Stripe-verified deck Checkout is sufficient proof to recover
+    // the parent validation when serverless /tmp lost the earlier base session.
+    if (deckSessionId) {
+      try {
+        session = await verifyPitchDeckPaid(validationId, deckSessionId);
+        unlocked = true;
+        pitchDeckUnlocked = true;
+        error = '';
+      } catch (deckErr) {
+        console.warn('⚠️ Pitch deck payment recovery failed:', deckErr.message);
+      }
+    }
   }
 
-  let pitchDeckUnlocked = false;
-  let pitchDeckError = '';
-  let pitchDeckReady = false;
-  let pitchDeckStatus = null;
   if (unlocked) {
     const currentSession = getWebSession(validationId);
     if (currentSession?.pitch_deck_paid) {
