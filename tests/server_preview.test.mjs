@@ -190,6 +190,79 @@ test('runHermesCli reports actionable diagnostics when the CLI fails in producti
   );
 });
 
+test('runHermesViaOpenAiApi posts a JSON-mode chat completion and returns the message content', async () => {
+  const calls = [];
+  const fakeFetch = async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({ choices: [{ message: { content: '{"pitch_category":"ok"}' } }] })
+    };
+  };
+
+  const output = await server.runHermesViaOpenAiApi('test prompt', { apiKey: 'sk-test', model: 'gpt-5.5', fetchImpl: fakeFetch });
+
+  assert.equal(output, '{"pitch_category":"ok"}');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://api.openai.com/v1/chat/completions');
+  assert.equal(calls[0].body.model, 'gpt-5.5');
+  assert.deepEqual(calls[0].body.response_format, { type: 'json_object' });
+  assert.deepEqual(calls[0].body.messages, [{ role: 'user', content: 'test prompt' }]);
+});
+
+test('runHermesViaOpenAiApi surfaces the OpenAI error detail on a non-2xx response', async () => {
+  const fakeFetch = async () => ({
+    ok: false,
+    status: 401,
+    statusText: 'Unauthorized',
+    json: async () => ({ error: { message: 'Incorrect API key provided' } })
+  });
+
+  await assert.rejects(
+    () => server.runHermesViaOpenAiApi('test prompt', { apiKey: 'sk-bad', fetchImpl: fakeFetch }),
+    /401 Unauthorized.*Incorrect API key provided/
+  );
+});
+
+test('runHermesViaOpenAiApi refuses to call out without an API key', async () => {
+  await assert.rejects(
+    () => server.runHermesViaOpenAiApi('test prompt', { apiKey: '' }),
+    /OPENAI_API_KEY is not set/
+  );
+});
+
+test('buildHermesPreviewReport uses the injected OpenAI runner end to end', async () => {
+  const fakeFetch = async () => ({
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    json: async () => ({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            pitch_category: 'clinic_ops',
+            demographic_a: 'Busy clinic admins ages 28-45',
+            demographic_b: 'Solo practitioners ages 35-60',
+            affinity_a: '82.1%',
+            affinity_b: '61.4%',
+            summary_matrix: ['driver', 'objection', 'validation test', 'ASP note']
+          })
+        }
+      }]
+    })
+  });
+
+  const preview = await server.buildHermesPreviewReport('AI scheduling concierge for small clinics', {
+    runHermes: (prompt) => server.runHermesViaOpenAiApi(prompt, { apiKey: 'sk-test', model: 'gpt-5.5', fetchImpl: fakeFetch })
+  });
+
+  assert.equal(preview.preview_source, 'hermes_agent');
+  assert.equal(preview.pitch_category, 'clinic_ops');
+  assert.equal(preview.demographic_a, 'Busy clinic admins ages 28-45');
+});
+
 test('retryPreferencesProvisioning returns an already-provisioned session without another API call', async () => {
   const validationId = 'retry-test-validation';
   const existing = server.saveWebSession({

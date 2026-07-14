@@ -174,7 +174,7 @@ OPENAI_API_KEY=...
 
 `NGROK_URL` is only for local Discord/tunnel workflows. In Stripe Dashboard, configure the webhook endpoint as your deployed Vercel URL plus `/webhook`, not the old ngrok URL.
 
-The `vercel-build` script installs Hermes Agent into `.vercel-hermes/` when `HERMES_PREVIEW_USE_CLI=1`; `server.js` then spawns that bundled CLI. If you leave `HERMES_PREVIEW_USE_CLI=0`, the app still works but the free preview uses the deterministic local fallback instead of Hermes Agent.
+On Vercel, `server.js` calls the OpenAI Chat Completions API directly for the free Hermes preview (via `fetch`, requesting JSON-mode output) instead of spawning the `hermes` CLI. A pip-installed CLI can't be bundled reliably into a Vercel serverless function: its venv launcher script bakes in the build container's absolute path, which doesn't exist once the function is deployed, so spawning it fails with `ENOENT` at runtime no matter how it's bundled. Set `OPENAI_API_KEY` (and optionally `HERMES_MODEL`) to enable it; if unset, or if the request fails, the free preview falls back to the deterministic local generator. Railway/local deployments still install and spawn the real Hermes CLI via `nixpacks.toml`, since those environments keep the same filesystem between build and run.
 
 ## Test plan
 

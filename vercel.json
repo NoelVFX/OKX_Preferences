@@ -1,15 +1,9 @@
 {
   "version": 2,
-  "buildCommand": "bash scripts/install-hermes-vercel.sh",
   "builds": [
     {
       "src": "server.js",
-      "use": "@vercel/node",
-      "config": {
-        "includeFiles": [
-          ".vercel-hermes/**"
-        ]
-      }
+      "use": "@vercel/node"
     }
   ],
   "routes": [

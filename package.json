@@ -8,9 +8,7 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "check": "node --check server.js",
-    "test": "node --test tests/*.mjs",
-    "vercel-build": "bash scripts/install-hermes-vercel.sh",
-    "postinstall": "bash scripts/install-hermes-vercel.sh"
+    "test": "node --test tests/*.mjs"
   },
   "dependencies": {
     "dotenv": "latest",

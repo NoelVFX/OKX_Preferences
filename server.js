@@ -379,7 +379,49 @@ function runHermesCli(prompt, { command = HERMES_COMMAND, timeoutMs = HERMES_PRE
   });
 }
 
-async function buildHermesPreviewReport(pitch, { runHermes = runHermesCli } = {}) {
+async function runHermesViaOpenAiApi(prompt, { apiKey = process.env.OPENAI_API_KEY, model = HERMES_MODEL, timeoutMs = HERMES_PREVIEW_TIMEOUT, fetchImpl = fetch } = {}) {
+  if (!apiKey) throw new Error('OPENAI_API_KEY is not set; cannot call the OpenAI API directly.');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetchImpl('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: model || 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.7,
+        response_format: { type: 'json_object' }
+      }),
+      signal: controller.signal
+    });
+  } catch (error) {
+    throw new Error(`OpenAI API request failed: ${error.message}`);
+  } finally {
+    clearTimeout(timer);
+  }
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = json?.error?.message || JSON.stringify(json).slice(0, 300);
+    throw new Error(`OpenAI API request failed: ${response.status} ${response.statusText} ${detail}`);
+  }
+  const content = json?.choices?.[0]?.message?.content;
+  if (!content) throw new Error('OpenAI API response did not include message content.');
+  return content.trim();
+}
+
+function defaultHermesRunner() {
+  // The bundled Vercel Hermes CLI is a pip-installed venv; its launcher script's
+  // shebang bakes in the build container's absolute path, which does not exist
+  // in the deployed Lambda filesystem, so spawning it always fails with ENOENT
+  // there. When the configured provider is OpenAI anyway (the Vercel default),
+  // call the Chat Completions API directly instead of shelling out to the CLI.
+  if (HERMES_PROVIDER === 'openai-api' && process.env.OPENAI_API_KEY) return runHermesViaOpenAiApi;
+  return runHermesCli;
+}
+
+async function buildHermesPreviewReport(pitch, { runHermes = defaultHermesRunner() } = {}) {
   const fallback = buildPreviewReport(pitch);
   if (!HERMES_PREVIEW_USE_CLI) return { ...fallback, preview_source: 'local_fallback', preview_error: 'HERMES_PREVIEW_USE_CLI is disabled' };
 
@@ -1057,6 +1099,7 @@ export {
   normalizeSummaryMatrix,
   publicBaseUrl,
   runHermesCli,
+  runHermesViaOpenAiApi,
   verifyPaidUnlock,
   sessionFromCheckoutMetadata,
   retryPreferencesProvisioning,
