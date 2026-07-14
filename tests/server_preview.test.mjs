@@ -1090,3 +1090,23 @@ test('verifyPitchDeckCryptoPaid marks the pitch deck paid after a confirmed paym
   assert.equal(saved.pitch_deck_payment_method, 'okx_crypto');
 });
 
+test('verifyCryptoUnlock is idempotent for an already-paid session without touching the RPC (the /success crypto_tx recovery path)', async () => {
+  const validationId = 'crypto-unlock-idempotent';
+  server.saveWebSession({ validation_id: validationId, pitch: 'Paid idea', preview: server.buildPreviewReport('Paid idea'), paid: true });
+  const result = await server.verifyCryptoUnlock(validationId, `0x${'d'.repeat(64)}`, {
+    rpc: async () => { throw new Error('RPC must not be called for an already-paid session'); }
+  });
+  assert.equal(result.status, 'confirmed');
+  assert.equal(result.session.paid, true);
+});
+
+test('verifyPitchDeckCryptoPaid is idempotent for an already-deck-paid session without touching the RPC', async () => {
+  const validationId = 'crypto-deck-idempotent';
+  server.saveWebSession({ validation_id: validationId, pitch: 'Deck idea', preview: server.buildPreviewReport('Deck idea'), paid: true, pitch_deck_paid: true });
+  const result = await server.verifyPitchDeckCryptoPaid(validationId, `0x${'e'.repeat(64)}`, {
+    rpc: async () => { throw new Error('RPC must not be called for an already-deck-paid session'); }
+  });
+  assert.equal(result.status, 'confirmed');
+  assert.equal(result.session.pitch_deck_paid, true);
+});
+

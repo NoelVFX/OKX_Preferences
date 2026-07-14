@@ -1402,8 +1402,8 @@ async function verifyPaidUnlock(validationId, checkoutSessionId, { retrieveCheck
     if (existingSession) return { ...existingSession, paid: true };
     if (!checkoutSessionId) throw new Error('Validation session not found.');
   }
+  if (!checkoutSessionId) throw new Error('We could not verify a payment for this validation. If you already paid, reload this page; otherwise start the checkout again.');
   if (!stripe && !retrieveCheckoutSession) throw new Error('Stripe is not configured on this server.');
-  if (!checkoutSessionId) throw new Error('Missing Stripe Checkout session_id.');
   const checkoutSession = retrieveCheckoutSession
     ? await retrieveCheckoutSession(checkoutSessionId)
     : await stripe.checkout.sessions.retrieve(checkoutSessionId);
@@ -1926,6 +1926,8 @@ app.get('/success', async (req, res) => {
   const validationId = String(req.query.validation_id || '');
   const checkoutSessionId = String(req.query.session_id || '');
   const deckSessionId = String(req.query.deck_session_id || '');
+  const cryptoTx = String(req.query.crypto_tx || '');
+  const deckCryptoTx = String(req.query.deck_crypto_tx || '');
   let session = validationId ? getWebSession(validationId) : null;
   let unlocked = false;
   let error = '';
@@ -1950,6 +1952,25 @@ app.get('/success', async (req, res) => {
         console.warn('⚠️ Pitch deck payment recovery failed:', deckErr.message);
       }
     }
+    // Crypto payments carry no Stripe session_id; re-verify on-chain from the
+    // tx hash the redirect carried so a bare /success (or a base unlock paid in
+    // USDT) is not misreported as "missing Stripe session".
+    if (!unlocked && cryptoTx) {
+      try {
+        const recovered = await verifyCryptoUnlock(validationId, cryptoTx);
+        if (recovered.status === 'confirmed') { session = recovered.session; unlocked = true; error = ''; }
+      } catch (cryptoErr) {
+        console.warn('⚠️ Crypto unlock recovery failed:', cryptoErr.message);
+      }
+    }
+    if (!unlocked && deckCryptoTx) {
+      try {
+        const recovered = await verifyPitchDeckCryptoPaid(validationId, deckCryptoTx);
+        if (recovered.status === 'confirmed') { session = recovered.session; unlocked = true; pitchDeckUnlocked = true; error = ''; }
+      } catch (cryptoErr) {
+        console.warn('⚠️ Crypto pitch deck recovery failed:', cryptoErr.message);
+      }
+    }
   }
 
   if (unlocked) {
@@ -1963,6 +1984,14 @@ app.get('/success', async (req, res) => {
         pitchDeckUnlocked = true;
       } catch (err) {
         console.warn('⚠️ Pitch deck payment verification failed:', err.message);
+        pitchDeckError = 'not_paid';
+      }
+    } else if (deckCryptoTx) {
+      try {
+        const recovered = await verifyPitchDeckCryptoPaid(validationId, deckCryptoTx);
+        if (recovered.status === 'confirmed') { session = recovered.session; pitchDeckUnlocked = true; }
+      } catch (err) {
+        console.warn('⚠️ Crypto pitch deck verification failed:', err.message);
         pitchDeckError = 'not_paid';
       }
     } else if (req.query.deck_error) {

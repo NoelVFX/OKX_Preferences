@@ -112,7 +112,7 @@ if (deckCryptoBtn) {
     const restore = label ? label.textContent : '';
     try {
       const cfg = await getCryptoConfig();
-      const { result } = await payAndVerify({
+      const { txHash, result } = await payAndVerify({
         cfg,
         amountBaseUnits: cfg.pitch_deck.amount_base_units,
         verifyUrl: `/api/session/${encodeURIComponent(validationId)}/pitch-deck/crypto/verify`,
@@ -120,7 +120,9 @@ if (deckCryptoBtn) {
       });
       if (result.paid) {
         showToast('success', 'Payment confirmed', 'Your USDT payment was verified on-chain. Preparing your pitch deck…');
-        window.location.href = `/success?validation_id=${encodeURIComponent(validationId)}`;
+        // Carry the tx hash so /success can re-verify on-chain if this request
+        // lands on a serverless instance that lost the just-saved session.
+        window.location.href = `/success?validation_id=${encodeURIComponent(validationId)}&deck_crypto_tx=${encodeURIComponent(txHash)}`;
       }
     } catch (error) {
       const message = error?.code === 4001 ? 'Payment request was rejected in OKX Wallet.' : (error?.message || 'Crypto payment failed.');

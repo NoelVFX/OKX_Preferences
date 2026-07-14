@@ -402,7 +402,7 @@ if (cryptoPayBtn) {
     cryptoPayBtn.disabled = true;
     const restoreLabel = cryptoPayLabel.textContent;
     try {
-      const { result } = await payAndVerify({
+      const { txHash, result } = await payAndVerify({
         cfg: cryptoConfig,
         amountBaseUnits: cryptoConfig.unlock.amount_base_units,
         verifyUrl: `/api/session/${encodeURIComponent(currentValidationId)}/crypto/verify`,
@@ -410,7 +410,9 @@ if (cryptoPayBtn) {
       });
       if (result.paid) {
         showToast('success', 'Payment confirmed', 'Your USDT payment was verified on-chain. Unlocking your dashboard…');
-        window.location.href = `/success?validation_id=${encodeURIComponent(currentValidationId)}`;
+        // Carry the tx hash so /success can re-verify on-chain if this request
+        // lands on a serverless instance that lost the just-saved session.
+        window.location.href = `/success?validation_id=${encodeURIComponent(currentValidationId)}&crypto_tx=${encodeURIComponent(txHash)}`;
       }
     } catch (error) {
       const message = error?.code === 4001 ? 'Payment request was rejected in OKX Wallet.' : (error?.message || 'Crypto payment failed.');
