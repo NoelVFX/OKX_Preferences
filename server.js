@@ -526,12 +526,61 @@ function buildPitchDeckFallback(session) {
   };
 }
 
+// Confirmed against a live account: GET /simulations/:id returns only status
+// fields (respondent_count, desired_respondent_count, etc.) while a simulation
+// is still running. Once status is "completed" it also includes:
+// - insights: { key_findings[], recommendations[], segment_insights[], limitations[], goal_summary }
+// - analysis.questions[]: per-question response distributions, with sample_answers[]
+//   (real respondent quotes) for open-text questions instead of a distribution.
+// This digest turns that into compact, prompt-friendly text instead of dumping
+// raw JSON, since a completed simulation's full payload can be tens of KB.
+function summarizeSimulationInsights(simulationInsights) {
+  if (!simulationInsights) return '';
+  const lines = [];
+  const status = simulationInsights.status || 'unknown';
+  const respondents = simulationInsights.respondent_count ?? 0;
+  const desired = simulationInsights.desired_respondent_count ?? 0;
+  lines.push(`Simulation status: ${status} (${respondents}/${desired} respondents).`);
+
+  const insights = simulationInsights.insights || {};
+  if (Array.isArray(insights.key_findings) && insights.key_findings.length) {
+    lines.push(`Key findings: ${insights.key_findings.join(' | ')}`);
+  }
+  if (Array.isArray(insights.recommendations) && insights.recommendations.length) {
+    lines.push(`Recommendations: ${insights.recommendations.join(' | ')}`);
+  }
+  if (Array.isArray(insights.segment_insights) && insights.segment_insights.length) {
+    lines.push(`Segment insights: ${insights.segment_insights.join(' | ')}`);
+  }
+  if (insights.goal_summary) lines.push(`Executive summary: ${insights.goal_summary}`);
+
+  const questions = simulationInsights.analysis?.questions || [];
+  for (const question of questions.slice(0, 12)) {
+    if (question.type === 'text') {
+      const samples = (question.sample_answers || []).slice(0, 3);
+      if (samples.length) lines.push(`Q: ${question.text} — sample respondent answers: ${samples.join('; ')}`);
+      continue;
+    }
+    const distribution = question.distribution || {};
+    const total = Object.values(distribution).reduce((sum, count) => sum + count, 0) || 1;
+    const top = Object.entries(distribution)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([label, count]) => `${label} (${Math.round((count / total) * 100)}%)`)
+      .join(', ');
+    if (top) lines.push(`Q: ${question.text} — ${top}`);
+  }
+
+  return lines.join('\n').slice(0, 4000);
+}
+
 function buildPitchDeckPrompt(session, simulationInsights) {
   const preview = session.preview || {};
   const pitch = session.pitch || 'Preferences ASP validation';
-  const insightsText = simulationInsights
-    ? `Live Preferences AI simulation result data is also available, use it to sharpen the findings: ${JSON.stringify(simulationInsights).slice(0, 1500)}`
-    : 'Live simulation result data was not available for this run; rely on the validation preview below.';
+  const insightsSummary = summarizeSimulationInsights(simulationInsights);
+  const insightsText = insightsSummary
+    ? `Live Preferences AI simulation results are also available. Cite specific numbers, percentages, or respondent quotes from this data wherever relevant:\n${insightsSummary}`
+    : 'Live simulation result data was not available for this run (the simulation may still be running); rely on the validation preview below.';
 
   return `
 You are Hermes Agent preparing an investor-ready pitch deck outline for Preferences ASP Concierge, a standalone Agent Service Provider.
@@ -549,9 +598,9 @@ title: short punchy deck title, under 60 characters
 tagline: one sentence positioning line
 problem: 1-2 sentences on the problem this concept addresses
 solution: 1-2 sentences on how this concept solves it
-market_opportunity: 1-2 sentences citing the validated demographics
+market_opportunity: 1-2 sentences citing the validated demographics and, if simulation results are available, real respondent numbers
 target_segments: array of exactly 2 objects, each with "name" and "affinity" keys, reusing the demographic and affinity values above
-validation_findings: array of 3-5 short strings summarizing the validation evidence, sharpened from the findings above
+validation_findings: array of 3-5 short strings summarizing the validation evidence; if simulation results are available, prefer citing specific percentages, price points, or respondent quotes from that data over generic statements
 business_model: 1-2 sentences on how this makes money
 go_to_market: 1-2 sentences on the launch wedge
 ask: 1 sentence describing what this pitch is asking for (funding, pilot customers, or partners)
@@ -563,10 +612,9 @@ Do not include markdown fences, commentary, or any text outside the JSON object.
 
 async function fetchSimulationInsights(simulationId, { request = preferencesRequest } = {}) {
   if (!PREFERENCES_API_KEY || !simulationId) return null;
-  // Best-effort only: this codebase has not previously needed to read simulation
-  // results back, so the exact Preferences AI response shape here is unconfirmed.
-  // Any failure must not block pitch deck generation, which can fall back to the
-  // validation preview data alone.
+  // Confirmed against a live Preferences AI account: this is a real endpoint.
+  // Any failure must still not block pitch deck generation, which falls back to
+  // the validation preview data alone.
   const json = await request('GET', `/simulations/${simulationId}`);
   return json?.data || json || null;
 }
@@ -1483,6 +1531,7 @@ export {
   buildHermesPitchDeckReport,
   buildPitchDeckBuffer,
   fetchSimulationInsights,
+  summarizeSimulationInsights,
   verifyPitchDeckPaid,
   WEB_PITCH_DECK_PRICE_CENTS
 };

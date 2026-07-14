@@ -535,6 +535,75 @@ test('buildHermesPitchDeckReport continues without simulation insights when fetc
   assert.match(capturedPrompt, /Live simulation result data was not available/);
 });
 
+test('summarizeSimulationInsights extracts findings, distributions, and quotes from a completed simulation', () => {
+  // Shape confirmed against a live Preferences AI account's GET /simulations/:id
+  // response for a status: "completed" simulation.
+  const simulation = {
+    status: 'completed',
+    respondent_count: 369,
+    desired_respondent_count: 357,
+    insights: {
+      key_findings: ['Strong demand among freelancers for automated expense tracking.'],
+      recommendations: ['Lead messaging with audit-proof peace of mind.'],
+      segment_insights: [],
+      goal_summary: 'Freelancers strongly want this but are security-conscious.'
+    },
+    analysis: {
+      questions: [
+        {
+          question_id: 'q04',
+          text: 'Do you keep your business and personal banking accounts strictly separate?',
+          type: 'yes_no',
+          distribution: { No: 8, Yes: 361 }
+        },
+        {
+          question_id: 'q12',
+          text: 'At what monthly subscription price would you consider this too expensive?',
+          type: 'text',
+          distribution: {},
+          sample_answers: ['30', '25', '30', '50']
+        }
+      ],
+      summary: { total_respondents: 369, total_questions: 2 }
+    }
+  };
+
+  const summary = server.summarizeSimulationInsights(simulation);
+
+  assert.match(summary, /completed \(369\/357 respondents\)/);
+  assert.match(summary, /Strong demand among freelancers/);
+  assert.match(summary, /Lead messaging with audit-proof peace of mind/);
+  assert.match(summary, /Yes \(98%\)/);
+  assert.match(summary, /sample respondent answers: 30; 25; 30/);
+});
+
+test('summarizeSimulationInsights returns an empty string for a still-running simulation with no analysis yet', () => {
+  const summary = server.summarizeSimulationInsights({ status: 'running', respondent_count: 0, desired_respondent_count: 357 });
+  assert.match(summary, /Simulation status: running \(0\/357 respondents\)/);
+  assert.doesNotMatch(summary, /Key findings/);
+});
+
+test('buildPitchDeckPrompt cites real simulation percentages and quotes instead of dumping raw JSON', () => {
+  const session = {
+    pitch: 'AI expense copilot for freelancers',
+    preview: server.buildPreviewReport('AI expense copilot for freelancers')
+  };
+  const simulation = {
+    status: 'completed',
+    respondent_count: 369,
+    desired_respondent_count: 357,
+    insights: { key_findings: ['Freelancers miss deductions due to disorganized receipts.'] },
+    analysis: { questions: [{ text: 'Would you pay for this?', type: 'multiple_choice', distribution: { Yes: 300, No: 69 } }] }
+  };
+
+  const prompt = server.buildPitchDeckPrompt(session, simulation);
+
+  assert.match(prompt, /Cite specific numbers, percentages, or respondent quotes/);
+  assert.match(prompt, /Freelancers miss deductions due to disorganized receipts/);
+  assert.match(prompt, /Yes \(81%\)/);
+  assert.doesNotMatch(prompt, /"respondent_count":369/);
+});
+
 test('fetchSimulationInsights returns null when no simulation id or API key is available', async () => {
   const insights = await server.fetchSimulationInsights('', { request: async () => { throw new Error('should not be called'); } });
   assert.equal(insights, null);
