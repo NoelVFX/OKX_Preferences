@@ -440,15 +440,6 @@ code { color: var(--accent-2); }
   to { transform: translateY(110vh) rotate(540deg); opacity: 0.3; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.001ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
-  }
-  .blob { animation: none; }
-}
-
 @media (max-width: 820px) {
   .split, .result-grid, .asset-card { grid-template-columns: 1fr; }
   .full { grid-column: auto; }

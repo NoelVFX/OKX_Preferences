@@ -26,7 +26,7 @@ let elapsedSeconds = 0;
 
 /* ---------- Background parallax ---------- */
 const blobs = document.querySelectorAll('.blob');
-if (blobs.length && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+if (blobs.length) {
   window.addEventListener('pointermove', (event) => {
     const px = (event.clientX / window.innerWidth - 0.5) * 2;
     const py = (event.clientY / window.innerHeight - 0.5) * 2;
@@ -53,6 +53,27 @@ document.querySelectorAll('#example-chips .chip').forEach((chip) => {
     pitchInput.focus();
   });
 });
+
+/* ---------- Busy-state buttons (label/spinner as persistent nodes so ripple isn't wiped) ---------- */
+function setupButtonState(button, idleLabel) {
+  const spinner = document.createElement('span');
+  spinner.className = 'btn-spinner hidden';
+  const label = document.createElement('span');
+  label.className = 'btn-label';
+  label.textContent = idleLabel;
+  button.textContent = '';
+  button.appendChild(spinner);
+  button.appendChild(label);
+  return { spinner, label, idleLabel };
+}
+
+function setButtonBusy(state, busy, busyLabel) {
+  state.spinner.classList.toggle('hidden', !busy);
+  state.label.textContent = busy ? busyLabel : state.idleLabel;
+}
+
+const submitState = setupButtonState(submitButton, 'Generate ASP validation preview');
+const retryState = setupButtonState(retryButton, 'Retry live provisioning');
 
 /* ---------- Button ripple ---------- */
 function attachRipple(button) {
@@ -122,9 +143,7 @@ function formatElapsed(seconds) {
 
 function setBusy(isBusy) {
   submitButton.disabled = isBusy;
-  submitButton.innerHTML = isBusy
-    ? '<span class="btn-spinner"></span><span>Generating…</span>'
-    : 'Generate ASP validation preview';
+  setButtonBusy(submitState, isBusy, 'Generating…');
   if (isBusy) {
     statusCard.classList.remove('hidden');
   }
@@ -197,7 +216,6 @@ function animateAffinity(valueId, fillId, rawValue) {
 
 /* ---------- Confetti ---------- */
 function launchConfetti() {
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const layer = document.createElement('div');
   layer.className = 'confetti-layer';
   document.body.appendChild(layer);
@@ -287,7 +305,7 @@ function render(data) {
 
   retryButton.classList.toggle('hidden', data.live_status !== 'failed' || !currentValidationId);
   retryButton.disabled = false;
-  retryButton.textContent = 'Retry live provisioning';
+  setButtonBusy(retryState, false);
 
   const checkoutLink = document.querySelector('#checkout-link');
   const checkoutNote = document.querySelector('#checkout-note');
@@ -349,7 +367,7 @@ form.addEventListener('submit', async (event) => {
 retryButton.addEventListener('click', async () => {
   if (!currentValidationId) return;
   retryButton.disabled = true;
-  retryButton.innerHTML = '<span class="btn-spinner"></span><span>Retrying…</span>';
+  setButtonBusy(retryState, true, 'Retrying…');
   statusCard.classList.remove('hidden');
   renderSteps();
   setStep(2);
@@ -376,7 +394,7 @@ retryButton.addEventListener('click', async () => {
     statusText.textContent = error.message;
     showToast('error', 'Retry failed', error.message);
     retryButton.disabled = false;
-    retryButton.textContent = 'Retry live provisioning';
+    setButtonBusy(retryState, false);
   } finally {
     clearInterval(elapsedTimer);
   }
