@@ -1637,11 +1637,20 @@ function friendlyDeckErrorMessage(code) {
 
 function renderSuccessPage({ session, unlocked, error, pitchDeckUnlocked, pitchDeckError, pitchDeckReady, pitchDeckStatus, deckSessionId }) {
   const previewItems = (session?.preview?.summary_matrix || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+  // Build the dashboard links from whatever we have — a saved URL, or the id
+  // (so the survey link appears as soon as the survey exists, without waiting
+  // on anything else).
+  const surveyUrl = session?.survey_url || (session?.survey_id ? `https://dashboard.preferencesai.io/surveys/${session.survey_id}` : '');
+  const simulationUrl = session?.simulation_url || (session?.simulation_id ? `https://dashboard.preferencesai.io/simulations/${session.simulation_id}` : '');
+  const validationIdAttr = escapeAttr(session?.validation_id || '');
+  const surveyBlock = surveyUrl
+    ? `<a class="big-link" href="${escapeAttr(surveyUrl)}" target="_blank" rel="noreferrer">Open Preferences AI Survey</a>`
+    : `<p id="survey-pending" class="fine-print" data-validation-id="${validationIdAttr}">Your Preferences AI survey is still being provisioned. <a href="#" id="survey-refresh" class="back-link">Refresh / retry</a></p>`;
   const links = unlocked ? `
     <div class="unlock-card success">
       <h2>Unlocked Preferences ASP dashboard links</h2>
-      ${session.survey_url ? `<a class="big-link" href="${escapeAttr(session.survey_url)}" target="_blank" rel="noreferrer">Open Preferences AI Survey</a>` : ''}
-      ${session.simulation_url ? `<a class="big-link" href="${escapeAttr(session.simulation_url)}" target="_blank" rel="noreferrer">Open Simulation Logs</a>` : '<p>No live simulation URL is available for this run.</p>'}
+      ${surveyBlock}
+      ${simulationUrl ? `<a class="big-link" href="${escapeAttr(simulationUrl)}" target="_blank" rel="noreferrer">Open Simulation Logs</a>` : '<p>No live simulation URL is available for this run yet.</p>'}
     </div>` : `
     <div class="unlock-card warning">
       <h2>Unlock not verified</h2>
@@ -2005,6 +2014,20 @@ app.get('/success', async (req, res) => {
       } catch (err) {
         console.warn('⚠️ Pitch deck readiness check failed on page load:', err.message);
       }
+    }
+
+    // Prefer the freshest provisioning links so a survey/simulation that
+    // finished provisioning (or was retried) after the payment snapshot shows
+    // up on the base unlock — the survey link must not wait for a deck purchase.
+    const fresh = validationId ? getWebSession(validationId) : null;
+    if (fresh) {
+      session = {
+        ...session,
+        survey_id: session.survey_id || fresh.survey_id || '',
+        simulation_id: session.simulation_id || fresh.simulation_id || '',
+        survey_url: session.survey_url || fresh.survey_url || '',
+        simulation_url: session.simulation_url || fresh.simulation_url || ''
+      };
     }
   }
 

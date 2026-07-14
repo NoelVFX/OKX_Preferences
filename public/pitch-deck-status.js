@@ -38,6 +38,23 @@ function launchConfetti() {
   setTimeout(() => layer.remove(), 4200);
 }
 
+/* ---------- Retry survey/simulation provisioning when its link is still pending ---------- */
+const surveyRefresh = document.querySelector('#survey-refresh');
+if (surveyRefresh) {
+  const validationId = document.querySelector('#survey-pending')?.dataset.validationId;
+  surveyRefresh.addEventListener('click', async (event) => {
+    event.preventDefault();
+    if (!validationId) { window.location.reload(); return; }
+    surveyRefresh.textContent = 'Refreshing…';
+    try {
+      await fetch(`/api/session/${encodeURIComponent(validationId)}/retry`, { method: 'POST' });
+    } catch (error) {
+      console.debug('Survey provisioning retry failed:', error);
+    }
+    window.location.reload();
+  });
+}
+
 /* ---------- Poll simulation → deck readiness (in-progress state) ---------- */
 const panel = document.querySelector('#pitch-deck-panel[data-status-url]');
 if (panel) {
