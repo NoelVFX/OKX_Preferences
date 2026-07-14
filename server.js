@@ -48,8 +48,14 @@ function resolveHermesCommand() {
 }
 const HERMES_COMMAND = resolveHermesCommand();
 const HERMES_PREVIEW_TIMEOUT = Number(process.env.HERMES_PREVIEW_TIMEOUT || 90) * 1000;
-const HERMES_PROVIDER = process.env.HERMES_PROVIDER || (IS_VERCEL && process.env.OPENAI_API_KEY ? 'openai-api' : '');
-const HERMES_MODEL = process.env.HERMES_MODEL || (IS_VERCEL && process.env.OPENAI_API_KEY ? 'gpt-5.5' : '');
+const HERMES_PROVIDER = process.env.HERMES_PROVIDER || (
+  IS_VERCEL && process.env.GEMINI_API_KEY ? 'gemini-api' :
+  IS_VERCEL && process.env.OPENAI_API_KEY ? 'openai-api' : ''
+);
+const HERMES_MODEL = process.env.HERMES_MODEL || (
+  HERMES_PROVIDER === 'gemini-api' ? 'gemini-2.0-flash' :
+  HERMES_PROVIDER === 'openai-api' ? 'gpt-5.5' : ''
+);
 
 if (!PREFERENCES_API_KEY) {
   console.warn('⚠️ PREFERENCES_AI_API_KEY is not set; web validations will render a dynamic preview but skip live Preferences AI API provisioning.');
@@ -61,7 +67,11 @@ if (!DISCORD_WEBHOOK_URL) {
   console.warn('⚠️ DISCORD_WEBHOOK_URL is not set; Stripe webhook Discord unlock delivery is disabled unless DISCORD_BOT_TOKEN + metadata channel/user is present.');
 }
 if (HERMES_PREVIEW_USE_CLI) {
-  console.log(`Hermes preview CLI enabled: command=${HERMES_COMMAND} provider=${HERMES_PROVIDER || '(default config)'} model=${HERMES_MODEL || '(default config)'} timeout=${HERMES_PREVIEW_TIMEOUT}ms`);
+  const activeRunner = defaultHermesRunner();
+  const runnerLabel = activeRunner === runHermesViaGeminiApi ? 'Gemini API'
+    : activeRunner === runHermesViaOpenAiApi ? 'OpenAI API'
+    : `CLI (command=${HERMES_COMMAND})`;
+  console.log(`Hermes preview enabled: runner=${runnerLabel} provider=${HERMES_PROVIDER || '(default config)'} model=${HERMES_MODEL || '(default config)'} timeout=${HERMES_PREVIEW_TIMEOUT}ms`);
 }
 
 const STOPWORDS = new Set([
@@ -411,12 +421,44 @@ async function runHermesViaOpenAiApi(prompt, { apiKey = process.env.OPENAI_API_K
   return content.trim();
 }
 
+async function runHermesViaGeminiApi(prompt, { apiKey = process.env.GEMINI_API_KEY, model = HERMES_MODEL, timeoutMs = HERMES_PREVIEW_TIMEOUT, fetchImpl = fetch } = {}) {
+  if (!apiKey) throw new Error('GEMINI_API_KEY is not set; cannot call the Gemini API directly.');
+  const resolvedModel = model || 'gemini-2.0-flash';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetchImpl(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(resolvedModel)}:generateContent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.7, response_mime_type: 'application/json' }
+      }),
+      signal: controller.signal
+    });
+  } catch (error) {
+    throw new Error(`Gemini API request failed: ${error.message}`);
+  } finally {
+    clearTimeout(timer);
+  }
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = json?.error?.message || JSON.stringify(json).slice(0, 300);
+    throw new Error(`Gemini API request failed: ${response.status} ${response.statusText} ${detail}`);
+  }
+  const content = json?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!content) throw new Error('Gemini API response did not include candidate text.');
+  return content.trim();
+}
+
 function defaultHermesRunner() {
   // The bundled Vercel Hermes CLI is a pip-installed venv; its launcher script's
   // shebang bakes in the build container's absolute path, which does not exist
   // in the deployed Lambda filesystem, so spawning it always fails with ENOENT
-  // there. When the configured provider is OpenAI anyway (the Vercel default),
-  // call the Chat Completions API directly instead of shelling out to the CLI.
+  // there. Call a hosted API directly instead of shelling out to the CLI: prefer
+  // Gemini (has a genuinely free tier) over OpenAI when both are configured.
+  if (HERMES_PROVIDER === 'gemini-api' && process.env.GEMINI_API_KEY) return runHermesViaGeminiApi;
   if (HERMES_PROVIDER === 'openai-api' && process.env.OPENAI_API_KEY) return runHermesViaOpenAiApi;
   return runHermesCli;
 }
@@ -1100,6 +1142,7 @@ export {
   publicBaseUrl,
   runHermesCli,
   runHermesViaOpenAiApi,
+  runHermesViaGeminiApi,
   verifyPaidUnlock,
   sessionFromCheckoutMetadata,
   retryPreferencesProvisioning,

@@ -233,6 +233,49 @@ test('runHermesViaOpenAiApi refuses to call out without an API key', async () =>
   );
 });
 
+test('runHermesViaGeminiApi posts a JSON-mode generateContent request and returns the candidate text', async () => {
+  const calls = [];
+  const fakeFetch = async (url, options) => {
+    calls.push({ url, headers: options.headers, body: JSON.parse(options.body) });
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({ candidates: [{ content: { parts: [{ text: '{"pitch_category":"ok"}' }] } }] })
+    };
+  };
+
+  const output = await server.runHermesViaGeminiApi('test prompt', { apiKey: 'test-gemini-key', model: 'gemini-2.0-flash', fetchImpl: fakeFetch });
+
+  assert.equal(output, '{"pitch_category":"ok"}');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent');
+  assert.equal(calls[0].headers['x-goog-api-key'], 'test-gemini-key');
+  assert.deepEqual(calls[0].body.generationConfig, { temperature: 0.7, response_mime_type: 'application/json' });
+  assert.deepEqual(calls[0].body.contents, [{ parts: [{ text: 'test prompt' }] }]);
+});
+
+test('runHermesViaGeminiApi surfaces the Gemini error detail on a non-2xx response', async () => {
+  const fakeFetch = async () => ({
+    ok: false,
+    status: 400,
+    statusText: 'Bad Request',
+    json: async () => ({ error: { message: 'API key not valid' } })
+  });
+
+  await assert.rejects(
+    () => server.runHermesViaGeminiApi('test prompt', { apiKey: 'bad-key', fetchImpl: fakeFetch }),
+    /400 Bad Request.*API key not valid/
+  );
+});
+
+test('runHermesViaGeminiApi refuses to call out without an API key', async () => {
+  await assert.rejects(
+    () => server.runHermesViaGeminiApi('test prompt', { apiKey: '' }),
+    /GEMINI_API_KEY is not set/
+  );
+});
+
 test('buildHermesPreviewReport uses the injected OpenAI runner end to end', async () => {
   const fakeFetch = async () => ({
     ok: true,
@@ -256,6 +299,38 @@ test('buildHermesPreviewReport uses the injected OpenAI runner end to end', asyn
 
   const preview = await server.buildHermesPreviewReport('AI scheduling concierge for small clinics', {
     runHermes: (prompt) => server.runHermesViaOpenAiApi(prompt, { apiKey: 'sk-test', model: 'gpt-5.5', fetchImpl: fakeFetch })
+  });
+
+  assert.equal(preview.preview_source, 'hermes_agent');
+  assert.equal(preview.pitch_category, 'clinic_ops');
+  assert.equal(preview.demographic_a, 'Busy clinic admins ages 28-45');
+});
+
+test('buildHermesPreviewReport uses the injected Gemini runner end to end', async () => {
+  const fakeFetch = async () => ({
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    json: async () => ({
+      candidates: [{
+        content: {
+          parts: [{
+            text: JSON.stringify({
+              pitch_category: 'clinic_ops',
+              demographic_a: 'Busy clinic admins ages 28-45',
+              demographic_b: 'Solo practitioners ages 35-60',
+              affinity_a: '82.1%',
+              affinity_b: '61.4%',
+              summary_matrix: ['driver', 'objection', 'validation test', 'ASP note']
+            })
+          }]
+        }
+      }]
+    })
+  });
+
+  const preview = await server.buildHermesPreviewReport('AI scheduling concierge for small clinics', {
+    runHermes: (prompt) => server.runHermesViaGeminiApi(prompt, { apiKey: 'test-gemini-key', model: 'gemini-2.0-flash', fetchImpl: fakeFetch })
   });
 
   assert.equal(preview.preview_source, 'hermes_agent');

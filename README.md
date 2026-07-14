@@ -165,16 +165,23 @@ STRIPE_SECRET_KEY=...
 STRIPE_WEBHOOK_SECRET=...
 WEB_PRODUCT_NAME="Preferences ASP Concierge Unlock"
 
-# Set this to 1 only if you want Vercel to bundle and spawn Hermes Agent.
+# Set this to 1 only if you want Vercel to generate a live Hermes preview.
 HERMES_PREVIEW_USE_CLI=1
-HERMES_PROVIDER=openai-api
-HERMES_MODEL=gpt-5.5
-OPENAI_API_KEY=...
+HERMES_PROVIDER=gemini-api
+HERMES_MODEL=gemini-2.0-flash
+GEMINI_API_KEY=...
 ```
 
 `NGROK_URL` is only for local Discord/tunnel workflows. In Stripe Dashboard, configure the webhook endpoint as your deployed Vercel URL plus `/webhook`, not the old ngrok URL.
 
-On Vercel, `server.js` calls the OpenAI Chat Completions API directly for the free Hermes preview (via `fetch`, requesting JSON-mode output) instead of spawning the `hermes` CLI. A pip-installed CLI can't be bundled reliably into a Vercel serverless function: its venv launcher script bakes in the build container's absolute path, which doesn't exist once the function is deployed, so spawning it fails with `ENOENT` at runtime no matter how it's bundled. Set `OPENAI_API_KEY` (and optionally `HERMES_MODEL`) to enable it; if unset, or if the request fails, the free preview falls back to the deterministic local generator. Railway/local deployments still install and spawn the real Hermes CLI via `nixpacks.toml`, since those environments keep the same filesystem between build and run.
+On Vercel, `server.js` calls a hosted chat API directly for the free Hermes preview (via `fetch`, requesting JSON-mode output) instead of spawning the `hermes` CLI. A pip-installed CLI can't be bundled reliably into a Vercel serverless function: its venv launcher script bakes in the build container's absolute path, which doesn't exist once the function is deployed, so spawning it fails with `ENOENT` at runtime no matter how it's bundled.
+
+Two providers are supported:
+
+- **Gemini (recommended, free tier)** — set `HERMES_PROVIDER=gemini-api`, `GEMINI_API_KEY=...` (get one at no cost from [Google AI Studio](https://aistudio.google.com/apikey), no credit card required), and optionally `HERMES_MODEL` (defaults to `gemini-2.0-flash`).
+- **OpenAI (paid)** — set `HERMES_PROVIDER=openai-api` and `OPENAI_API_KEY=...` instead. Requires OpenAI account credits.
+
+If both `GEMINI_API_KEY` and `OPENAI_API_KEY` are set, Gemini takes priority. If neither is set, or the request fails (e.g. an expired/invalid key, or exhausted quota), the free preview falls back to the deterministic local generator instead of erroring out. Railway/local deployments still install and spawn the real Hermes CLI via `nixpacks.toml`, since those environments keep the same filesystem between build and run.
 
 ## Test plan
 
