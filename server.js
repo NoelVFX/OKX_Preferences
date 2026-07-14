@@ -762,17 +762,33 @@ async function buildHermesPitchDeckReport(session, { runHermes = defaultHermesRu
   }
 }
 
+// Simulation statuses that mean "still actively working toward completion", so
+// the pitch deck should keep waiting. Everything else that is not "completed"
+// (no simulation launched at all, insufficient PRU balance, failed, skipped,
+// etc.) will never reach completion, so we must NOT wait forever — we build the
+// local-fallback deck immediately instead.
+const SIMULATION_IN_PROGRESS_STATES = new Set([
+  'running', 'launched', 'not_started', 'queued', 'pending', 'processing', 'in_progress', 'generating'
+]);
+
 async function checkPitchDeckReadiness(session, { fetchInsights = fetchSimulationInsights, buildDeck = buildHermesPitchDeckReport } = {}) {
   const cachedDeck = session.pitch_deck_content;
+  const cachedStatus = session.pitch_deck_simulation_status;
   const cachedDeckHasResults = Boolean(
     cachedDeck?.simulation_key_findings?.length || cachedDeck?.simulation_recommendations?.length ||
     cachedDeck?.simulation_segment_insights?.length || cachedDeck?.simulation_evidence?.metrics?.length ||
     cachedDeck?.simulation_evidence?.quotes?.length
   );
-  if (session.pitch_deck_ready && cachedDeck && session.pitch_deck_simulation_status === 'completed' && cachedDeckHasResults) {
+  // Serve a cached deck when either it was built from a completed simulation
+  // with real results, OR it was built as a terminal local fallback (a
+  // simulation that will never complete), so repeated polls/reloads don't
+  // regenerate it.
+  const cachedCompletedWithResults = cachedStatus === 'completed' && cachedDeckHasResults;
+  const cachedTerminalFallback = Boolean(cachedStatus) && cachedStatus !== 'completed' && !SIMULATION_IN_PROGRESS_STATES.has(cachedStatus);
+  if (session.pitch_deck_ready && cachedDeck && (cachedCompletedWithResults || cachedTerminalFallback)) {
     return {
       deck_ready: true,
-      simulation_status: session.pitch_deck_simulation_status || 'completed',
+      simulation_status: cachedStatus || 'completed',
       respondent_count: session.pitch_deck_respondent_count || 0,
       desired_respondent_count: session.pitch_deck_desired_respondent_count || 0
     };
@@ -796,21 +812,31 @@ async function checkPitchDeckReadiness(session, { fetchInsights = fetchSimulatio
     }
   }
 
-  if (simulationStatus !== 'completed') {
+  // Only keep the customer waiting while the simulation is genuinely still
+  // progressing toward completion.
+  if (SIMULATION_IN_PROGRESS_STATES.has(simulationStatus)) {
     return { deck_ready: false, simulation_status: simulationStatus, respondent_count: respondentCount, desired_respondent_count: desiredCount, waiting_for: 'simulation_completion' };
   }
 
-  let completedInsights;
-  try {
-    completedInsights = await fetchInsights(session.simulation_id);
-  } catch (error) {
-    return { deck_ready: false, simulation_status: simulationStatus, respondent_count: respondentCount, desired_respondent_count: desiredCount, waiting_for: 'simulation_results' };
-  }
-  if (!hasSimulationResultData(completedInsights)) {
-    return { deck_ready: false, simulation_status: simulationStatus, respondent_count: respondentCount, desired_respondent_count: desiredCount, waiting_for: 'simulation_results' };
+  // Completed with usable results → build the data-rich deck from real
+  // simulation numbers. Any other terminal state (no simulation launched,
+  // insufficient PRU, failed, skipped) → build the local-fallback deck now so
+  // the customer is never stuck loading.
+  let completedInsights = null;
+  if (simulationStatus === 'completed') {
+    try {
+      completedInsights = await fetchInsights(session.simulation_id);
+    } catch (error) {
+      return { deck_ready: false, simulation_status: simulationStatus, respondent_count: respondentCount, desired_respondent_count: desiredCount, waiting_for: 'simulation_results' };
+    }
+    if (!hasSimulationResultData(completedInsights)) {
+      return { deck_ready: false, simulation_status: simulationStatus, respondent_count: respondentCount, desired_respondent_count: desiredCount, waiting_for: 'simulation_results' };
+    }
   }
 
-  const deck = await buildDeck(session, { fetchInsights: async () => completedInsights });
+  const deck = completedInsights
+    ? await buildDeck(session, { fetchInsights: async () => completedInsights })
+    : await buildDeck(session);
   saveWebSession({
     validation_id: session.validation_id,
     pitch_deck_ready: true,

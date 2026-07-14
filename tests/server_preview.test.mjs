@@ -825,9 +825,22 @@ test('checkPitchDeckReadiness generates and caches the deck once the simulation 
   const session = server.getWebSession(validationId);
   let generateCalls = 0;
 
+  // A completed simulation with real result data (key findings), so the
+  // readiness check's hasSimulationResultData gate passes.
+  const completedInsights = {
+    status: 'completed',
+    respondent_count: 369,
+    desired_respondent_count: 357,
+    insights: { key_findings: [{ finding: 'Strong product-market fit.', confidence: 'high', evidence_question_ids: ['q09'] }] }
+  };
+  const deckWithResults = () => ({
+    ...server.buildPitchDeckFallback(session),
+    simulation_key_findings: [{ text: 'Strong product-market fit.', confidence: 'high', evidence: ['Q09'], followUpLabel: '' }]
+  });
+
   const status = await server.checkPitchDeckReadiness(session, {
-    fetchInsights: async () => ({ status: 'completed', respondent_count: 369, desired_respondent_count: 357 }),
-    buildDeck: async () => { generateCalls += 1; return server.buildPitchDeckFallback(session); }
+    fetchInsights: async () => completedInsights,
+    buildDeck: async () => { generateCalls += 1; return deckWithResults(); }
   });
 
   assert.equal(status.deck_ready, true);
@@ -838,10 +851,10 @@ test('checkPitchDeckReadiness generates and caches the deck once the simulation 
   assert.equal(saved.pitch_deck_ready, true);
   assert.ok(saved.pitch_deck_content);
 
-  // A second check should reuse the cached deck instead of calling Hermes again.
+  // A second check should reuse the cached deck instead of regenerating.
   const secondStatus = await server.checkPitchDeckReadiness(saved, {
     fetchInsights: async () => { throw new Error('should not re-fetch once cached'); },
-    buildDeck: async () => { generateCalls += 1; return server.buildPitchDeckFallback(session); }
+    buildDeck: async () => { generateCalls += 1; return deckWithResults(); }
   });
   assert.equal(secondStatus.deck_ready, true);
   assert.equal(generateCalls, 1);
@@ -862,6 +875,59 @@ test('checkPitchDeckReadiness treats a failed or missing simulation as terminal 
 
   assert.equal(status.deck_ready, true);
   assert.equal(status.simulation_status, 'not_available');
+});
+
+test('checkPitchDeckReadiness falls back to a local deck (not stuck loading) when the simulation cannot run for lack of PRU credits', async () => {
+  // Provisioning without enough PRU balance leaves the session with no
+  // simulation_id and simulation_status "insufficient_balance"; the deck must
+  // still generate immediately instead of spinning forever.
+  const validationId = 'deck-readiness-no-pru';
+  server.saveWebSession({
+    validation_id: validationId,
+    pitch: 'AI scheduling concierge for small clinics',
+    preview: server.buildPreviewReport('AI scheduling concierge for small clinics'),
+    simulation_id: '',
+    simulation_status: 'insufficient_balance'
+  });
+  const session = server.getWebSession(validationId);
+  let generateCalls = 0;
+
+  const status = await server.checkPitchDeckReadiness(session, {
+    fetchInsights: async () => { throw new Error('no simulation to fetch'); },
+    buildDeck: async () => { generateCalls += 1; return server.buildPitchDeckFallback(session); }
+  });
+
+  assert.equal(status.deck_ready, true);
+  assert.equal(generateCalls, 1);
+  assert.equal(server.getWebSession(validationId).pitch_deck_ready, true);
+
+  // And it is cached, so a later poll/reload does not regenerate.
+  const second = await server.checkPitchDeckReadiness(server.getWebSession(validationId), {
+    fetchInsights: async () => { throw new Error('no simulation to fetch'); },
+    buildDeck: async () => { generateCalls += 1; return server.buildPitchDeckFallback(session); }
+  });
+  assert.equal(second.deck_ready, true);
+  assert.equal(generateCalls, 1);
+});
+
+test('checkPitchDeckReadiness falls back to a local deck when a launched simulation ends in a failed state', async () => {
+  const session = {
+    validation_id: 'deck-readiness-failed-sim',
+    pitch: 'AI scheduling concierge for small clinics',
+    preview: server.buildPreviewReport('AI scheduling concierge for small clinics'),
+    simulation_id: 'sim_that_failed',
+    simulation_status: 'launched'
+  };
+  let generateCalls = 0;
+
+  const status = await server.checkPitchDeckReadiness(session, {
+    fetchInsights: async () => ({ status: 'failed', respondent_count: 0, desired_respondent_count: 357 }),
+    buildDeck: async () => { generateCalls += 1; return server.buildPitchDeckFallback(session); }
+  });
+
+  assert.equal(status.deck_ready, true);
+  assert.equal(status.simulation_status, 'failed');
+  assert.equal(generateCalls, 1);
 });
 
 test('checkPitchDeckReadiness keeps waiting (does not generate) when the live status fetch fails transiently', async () => {
