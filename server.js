@@ -539,12 +539,48 @@ function buildPitchDeckFallback(session) {
 
 // Confirmed against a live account: GET /simulations/:id returns only status
 // fields (respondent_count, desired_respondent_count, etc.) while a simulation
-// is still running. Once status is "completed" it also includes:
-// - insights: { key_findings[], recommendations[], segment_insights[], limitations[], goal_summary }
-// - analysis.questions[]: per-question response distributions, with sample_answers[]
-//   (real respondent quotes) for open-text questions instead of a distribution.
-// This digest turns that into compact, prompt-friendly text instead of dumping
-// raw JSON, since a completed simulation's full payload can be tens of KB.
+// is still running. Once status is "completed" and Preferences AI's own
+// analysis succeeded, it also includes an insights block with STRUCTURED
+// objects, not plain strings:
+//   key_findings[]: { finding, confidence, evidence_question_ids[], follow_up_suggestion?: { label, ... } }
+//   recommendations[]: { recommendation, priority }
+//   segment_insights[]: { segment, insight, size_pct }
+//   limitations[]: string[]
+//   goal_summary: string
+// (analysis.questions[] holds per-question response distributions, with
+// sample_answers[] — real respondent quotes — for open-text questions.)
+function extractSimulationInsightHighlights(simulationInsights) {
+  const insights = simulationInsights?.insights || {};
+
+  const keyFindings = (Array.isArray(insights.key_findings) ? insights.key_findings : [])
+    .map((item) => (typeof item === 'string')
+      ? { text: item, confidence: '', evidence: [], followUpLabel: '' }
+      : {
+        text: String(item?.finding || item?.text || '').trim(),
+        confidence: String(item?.confidence || '').trim(),
+        evidence: Array.isArray(item?.evidence_question_ids) ? item.evidence_question_ids.map((id) => String(id).toUpperCase()) : [],
+        followUpLabel: item?.follow_up_suggestion?.label || ''
+      })
+    .filter((item) => item.text);
+
+  const recommendations = (Array.isArray(insights.recommendations) ? insights.recommendations : [])
+    .map((item) => (typeof item === 'string')
+      ? { text: item, priority: '' }
+      : { text: String(item?.recommendation || item?.text || '').trim(), priority: String(item?.priority || '').trim() })
+    .filter((item) => item.text);
+
+  const segmentInsights = (Array.isArray(insights.segment_insights) ? insights.segment_insights : [])
+    .map((item) => (typeof item === 'string')
+      ? { segment: '', text: item, sizePct: null }
+      : { segment: String(item?.segment || '').trim(), text: String(item?.insight || item?.text || '').trim(), sizePct: typeof item?.size_pct === 'number' ? item.size_pct : null })
+    .filter((item) => item.text);
+
+  return { keyFindings, recommendations, segmentInsights, goalSummary: insights.goal_summary || '' };
+}
+
+// Turns a live simulation payload into compact, prompt-friendly text instead
+// of dumping raw JSON, since a completed simulation's full payload can be
+// tens of KB.
 function summarizeSimulationInsights(simulationInsights) {
   if (!simulationInsights) return '';
   const lines = [];
@@ -553,36 +589,46 @@ function summarizeSimulationInsights(simulationInsights) {
   const desired = simulationInsights.desired_respondent_count ?? 0;
   lines.push(`Simulation status: ${status} (${respondents}/${desired} respondents).`);
 
-  const insights = simulationInsights.insights || {};
-  if (Array.isArray(insights.key_findings) && insights.key_findings.length) {
-    lines.push(`Key findings: ${insights.key_findings.join(' | ')}`);
+  const { keyFindings, recommendations, segmentInsights, goalSummary } = extractSimulationInsightHighlights(simulationInsights);
+  if (goalSummary) lines.push(`Executive summary: ${goalSummary}`);
+  for (const finding of keyFindings) {
+    const confidence = finding.confidence ? ` [${finding.confidence} confidence]` : '';
+    const evidence = finding.evidence.length ? ` (evidence: ${finding.evidence.join(', ')})` : '';
+    lines.push(`Key finding${confidence}: ${finding.text}${evidence}`);
   }
-  if (Array.isArray(insights.recommendations) && insights.recommendations.length) {
-    lines.push(`Recommendations: ${insights.recommendations.join(' | ')}`);
+  for (const recommendation of recommendations) {
+    const priority = recommendation.priority ? ` [${recommendation.priority} priority]` : '';
+    lines.push(`Recommendation${priority}: ${recommendation.text}`);
   }
-  if (Array.isArray(insights.segment_insights) && insights.segment_insights.length) {
-    lines.push(`Segment insights: ${insights.segment_insights.join(' | ')}`);
+  for (const segment of segmentInsights) {
+    const sizeNote = segment.sizePct !== null ? ` (${segment.sizePct}% of respondents)` : '';
+    lines.push(`Segment insight — ${segment.segment}${sizeNote}: ${segment.text}`);
   }
-  if (insights.goal_summary) lines.push(`Executive summary: ${insights.goal_summary}`);
 
-  const questions = simulationInsights.analysis?.questions || [];
-  for (const question of questions.slice(0, 12)) {
-    if (question.type === 'text') {
-      const samples = (question.sample_answers || []).slice(0, 3);
-      if (samples.length) lines.push(`Q: ${question.text} — sample respondent answers: ${samples.join('; ')}`);
-      continue;
+  // Only fall back to raw per-question distributions when Preferences AI's
+  // own curated insights are empty (e.g. its summary generation failed for
+  // this particular run) — the curated findings above are strictly better
+  // signal when they exist.
+  if (!keyFindings.length && !recommendations.length) {
+    const questions = simulationInsights.analysis?.questions || [];
+    for (const question of questions.slice(0, 12)) {
+      if (question.type === 'text') {
+        const samples = (question.sample_answers || []).slice(0, 3);
+        if (samples.length) lines.push(`Q: ${question.text} — sample respondent answers: ${samples.join('; ')}`);
+        continue;
+      }
+      const distribution = question.distribution || {};
+      const total = Object.values(distribution).reduce((sum, count) => sum + count, 0) || 1;
+      const top = Object.entries(distribution)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([label, count]) => `${label} (${Math.round((count / total) * 100)}%)`)
+        .join(', ');
+      if (top) lines.push(`Q: ${question.text} — ${top}`);
     }
-    const distribution = question.distribution || {};
-    const total = Object.values(distribution).reduce((sum, count) => sum + count, 0) || 1;
-    const top = Object.entries(distribution)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([label, count]) => `${label} (${Math.round((count / total) * 100)}%)`)
-      .join(', ');
-    if (top) lines.push(`Q: ${question.text} — ${top}`);
   }
 
-  return lines.join('\n').slice(0, 4000);
+  return lines.join('\n').slice(0, 6000);
 }
 
 function buildPitchDeckPrompt(session, simulationInsights) {
@@ -632,7 +678,6 @@ async function fetchSimulationInsights(simulationId, { request = preferencesRequ
 
 async function buildHermesPitchDeckReport(session, { runHermes = defaultHermesRunner(), fetchInsights = fetchSimulationInsights } = {}) {
   const fallback = buildPitchDeckFallback(session);
-  if (!HERMES_PREVIEW_USE_CLI) return { ...fallback, deck_source: 'local_fallback', deck_error: 'HERMES_PREVIEW_USE_CLI is disabled' };
 
   let simulationInsights = null;
   if (session.simulation_id) {
@@ -642,6 +687,18 @@ async function buildHermesPitchDeckReport(session, { runHermes = defaultHermesRu
       console.warn(`⚠️ Could not fetch Preferences AI simulation insights for pitch deck (continuing without them): ${error.message}`);
     }
   }
+  // Extracted once and attached to every return path below (Hermes success,
+  // Hermes failure, or Hermes disabled) so the deck's dedicated findings and
+  // recommendations slides always reflect real simulation data whenever it
+  // exists, regardless of whether Hermes itself is working.
+  const highlights = extractSimulationInsightHighlights(simulationInsights);
+  const highlightFields = {
+    simulation_key_findings: highlights.keyFindings,
+    simulation_recommendations: highlights.recommendations,
+    simulation_segment_insights: highlights.segmentInsights
+  };
+
+  if (!HERMES_PREVIEW_USE_CLI) return { ...fallback, ...highlightFields, deck_source: 'local_fallback', deck_error: 'HERMES_PREVIEW_USE_CLI is disabled' };
 
   const prompt = buildPitchDeckPrompt(session, simulationInsights);
   try {
@@ -650,7 +707,7 @@ async function buildHermesPitchDeckReport(session, { runHermes = defaultHermesRu
     for (const key of ['title', 'problem', 'solution', 'target_segments', 'validation_findings']) {
       if (!parsed[key]) throw new Error(`Hermes pitch deck JSON missing key: ${key}`);
     }
-    const deck = { ...fallback, ...parsed, deck_source: 'hermes_agent', deck_error: '' };
+    const deck = { ...fallback, ...parsed, ...highlightFields, deck_source: 'hermes_agent', deck_error: '' };
     deck.target_segments = (Array.isArray(deck.target_segments) && deck.target_segments.length) ? deck.target_segments : fallback.target_segments;
     deck.validation_findings = normalizeSummaryMatrix(deck.validation_findings, fallback.validation_findings);
     deck.next_steps = normalizeSummaryMatrix(deck.next_steps, fallback.next_steps);
@@ -658,7 +715,7 @@ async function buildHermesPitchDeckReport(session, { runHermes = defaultHermesRu
   } catch (error) {
     const deckError = error.message;
     console.warn(`⚠️ Hermes pitch deck generation failed; using local dynamic deck fallback: ${deckError}`);
-    return { ...fallback, deck_source: 'local_fallback', deck_error: deckError };
+    return { ...fallback, ...highlightFields, deck_source: 'local_fallback', deck_error: deckError };
   }
 }
 
@@ -743,6 +800,31 @@ function addDeckBulletSlide(pptx, heading, items) {
   return slide;
 }
 
+// Renders real Preferences AI simulation findings/recommendations, each as a
+// badge (confidence or priority) + main text + optional evidence question IDs
+// + optional follow-up experiment label, independent of Hermes.
+function addDeckHighlightSlide(pptx, heading, items, { badgeField, badgeLabel } = {}) {
+  const slide = pptx.addSlide();
+  slide.background = { color: DECK_COLORS.bg };
+  slide.addText(heading, { x: 0.6, y: 0.5, w: 8.8, h: 0.6, fontSize: 24, bold: true, color: DECK_COLORS.accent2, fontFace: 'Arial' });
+
+  const runs = [];
+  for (const item of items.slice(0, 4)) {
+    const badgeValue = item[badgeField];
+    if (badgeValue) runs.push({ text: `[${String(badgeValue).toUpperCase()} ${badgeLabel}] `, options: { bold: true, color: DECK_COLORS.accent, fontSize: 13 } });
+    runs.push({ text: item.text, options: { color: DECK_COLORS.text, fontSize: 13, breakLine: true } });
+    if (item.evidence && item.evidence.length) {
+      runs.push({ text: `Evidence: ${item.evidence.join(', ')}`, options: { italic: true, color: DECK_COLORS.muted, fontSize: 10, breakLine: true } });
+    }
+    if (item.followUpLabel) {
+      runs.push({ text: `→ ${item.followUpLabel}`, options: { italic: true, color: DECK_COLORS.accent2, fontSize: 10, breakLine: true } });
+    }
+    runs.push({ text: ' ', options: { fontSize: 5, breakLine: true } });
+  }
+  slide.addText(runs, { x: 0.6, y: 1.25, w: 8.8, h: 3.95, fontFace: 'Arial', valign: 'top' });
+  return slide;
+}
+
 function addDeckSegmentsSlide(pptx, heading, segments) {
   const slide = pptx.addSlide();
   slide.background = { color: DECK_COLORS.bg };
@@ -772,6 +854,12 @@ async function buildPitchDeckBuffer(session, deck) {
   addDeckSegmentsSlide(pptx, 'Target Segments (Preferences AI Validated)', deck.target_segments);
   addDeckBodySlide(pptx, 'Market Opportunity', deck.market_opportunity);
   addDeckBulletSlide(pptx, 'Validation Findings', deck.validation_findings);
+  if (deck.simulation_key_findings?.length) {
+    addDeckHighlightSlide(pptx, 'Key Findings from Live Simulation', deck.simulation_key_findings, { badgeField: 'confidence', badgeLabel: 'CONFIDENCE' });
+  }
+  if (deck.simulation_recommendations?.length) {
+    addDeckHighlightSlide(pptx, 'Data-Driven Recommendations', deck.simulation_recommendations, { badgeField: 'priority', badgeLabel: 'PRIORITY' });
+  }
   addDeckBodySlide(pptx, 'Business Model', deck.business_model);
   addDeckBodySlide(pptx, 'Go-To-Market', deck.go_to_market);
   addDeckBodySlide(pptx, 'The Ask', deck.ask);
@@ -1657,6 +1745,7 @@ export {
   buildPitchDeckBuffer,
   fetchSimulationInsights,
   summarizeSimulationInsights,
+  extractSimulationInsightHighlights,
   verifyPitchDeckPaid,
   checkPitchDeckReadiness,
   WEB_PITCH_DECK_PRICE_CENTS

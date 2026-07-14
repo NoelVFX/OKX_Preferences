@@ -526,6 +526,34 @@ test('buildHermesPitchDeckReport falls back to validation-derived deck content w
   assert.ok(Array.isArray(deck.validation_findings));
 });
 
+test('buildHermesPitchDeckReport attaches real simulation findings/recommendations even when Hermes fails', async () => {
+  const session = {
+    validation_id: 'deck-test-2b',
+    pitch: 'AI scheduling concierge for small clinics',
+    preview: server.buildPreviewReport('AI scheduling concierge for small clinics'),
+    simulation_id: 'sim_with_real_insights'
+  };
+
+  const deck = await server.buildHermesPitchDeckReport(session, {
+    fetchInsights: async () => ({
+      status: 'completed',
+      respondent_count: 369,
+      desired_respondent_count: 357,
+      insights: {
+        key_findings: [{ finding: 'Strong product-market fit.', confidence: 'high', evidence_question_ids: ['q09'] }],
+        recommendations: [{ recommendation: 'Lead with the B2B pitch.', priority: 'high' }]
+      }
+    }),
+    runHermes: async () => { throw new Error('Hermes is down'); }
+  });
+
+  assert.equal(deck.deck_source, 'local_fallback');
+  assert.equal(deck.simulation_key_findings.length, 1);
+  assert.match(deck.simulation_key_findings[0].text, /Strong product-market fit/);
+  assert.equal(deck.simulation_recommendations.length, 1);
+  assert.match(deck.simulation_recommendations[0].text, /Lead with the B2B pitch/);
+});
+
 test('buildHermesPitchDeckReport continues without simulation insights when fetching them fails', async () => {
   const session = {
     validation_id: 'deck-test-3',
@@ -553,72 +581,109 @@ test('buildHermesPitchDeckReport continues without simulation insights when fetc
   assert.match(capturedPrompt, /Live simulation result data was not available/);
 });
 
-test('summarizeSimulationInsights extracts findings, distributions, and quotes from a completed simulation', () => {
-  // Shape confirmed against a live Preferences AI account's GET /simulations/:id
-  // response for a status: "completed" simulation.
+// Fixture shape confirmed against a live Preferences AI account's
+// GET /simulations/:id response for a status: "completed" simulation with
+// populated insights (an AI scheduling concierge for clinics run).
+const REAL_COMPLETED_SIMULATION_FIXTURE = {
+  status: 'completed',
+  respondent_count: 369,
+  desired_respondent_count: 357,
+  insights: {
+    key_findings: [
+      {
+        finding: 'Product-market fit is exceptionally strong, with 100% of respondents preferring automated 24/7 booking.',
+        confidence: 'high',
+        evidence_question_ids: ['q09', 'q11', 'q08'],
+        follow_up_suggestion: { label: 'Map Booking Journeys' }
+      },
+      {
+        finding: 'Trust and privacy are the primary adoption barriers, with only 57.3% rating the concept as trustworthy.',
+        confidence: 'high',
+        evidence_question_ids: ['q08', 'q13']
+      }
+    ],
+    recommendations: [
+      { recommendation: 'Position the product primarily as a B2B SaaS solution sold directly to clinics.', priority: 'high' },
+      { recommendation: 'Prioritize HIPAA compliance and clear privacy guarantees in onboarding.', priority: 'medium' }
+    ],
+    segment_insights: [
+      { segment: 'Parents & Caregivers', insight: 'Highest willingness to pay the convenience fee.', size_pct: 50.8 }
+    ],
+    goal_summary: 'The survey validates an exceptionally strong product-market fit for the AI scheduling concierge.'
+  },
+  analysis: {
+    questions: [
+      { text: 'Do you keep your business and personal banking accounts strictly separate?', type: 'yes_no', distribution: { No: 8, Yes: 361 } }
+    ],
+    summary: { total_respondents: 369, total_questions: 1 }
+  }
+};
+
+test('extractSimulationInsightHighlights parses the real key_findings/recommendations object shape (not [object Object])', () => {
+  const highlights = server.extractSimulationInsightHighlights(REAL_COMPLETED_SIMULATION_FIXTURE);
+
+  assert.equal(highlights.keyFindings.length, 2);
+  assert.match(highlights.keyFindings[0].text, /Product-market fit is exceptionally strong/);
+  assert.equal(highlights.keyFindings[0].confidence, 'high');
+  assert.deepEqual(highlights.keyFindings[0].evidence, ['Q09', 'Q11', 'Q08']);
+  assert.equal(highlights.keyFindings[0].followUpLabel, 'Map Booking Journeys');
+
+  assert.equal(highlights.recommendations.length, 2);
+  assert.match(highlights.recommendations[0].text, /B2B SaaS solution/);
+  assert.equal(highlights.recommendations[0].priority, 'high');
+
+  assert.equal(highlights.segmentInsights.length, 1);
+  assert.equal(highlights.segmentInsights[0].segment, 'Parents & Caregivers');
+  assert.equal(highlights.segmentInsights[0].sizePct, 50.8);
+});
+
+test('summarizeSimulationInsights renders curated findings/recommendations as readable text, not [object Object]', () => {
+  const summary = server.summarizeSimulationInsights(REAL_COMPLETED_SIMULATION_FIXTURE);
+
+  assert.doesNotMatch(summary, /\[object Object\]/);
+  assert.match(summary, /completed \(369\/357 respondents\)/);
+  assert.match(summary, /Key finding \[high confidence\]: Product-market fit is exceptionally strong.*\(evidence: Q09, Q11, Q08\)/);
+  assert.match(summary, /Recommendation \[high priority\]: Position the product primarily as a B2B SaaS solution/);
+  assert.match(summary, /Segment insight — Parents & Caregivers \(50\.8% of respondents\)/);
+});
+
+test('summarizeSimulationInsights falls back to per-question distributions only when curated insights are empty', () => {
   const simulation = {
     status: 'completed',
     respondent_count: 369,
     desired_respondent_count: 357,
-    insights: {
-      key_findings: ['Strong demand among freelancers for automated expense tracking.'],
-      recommendations: ['Lead messaging with audit-proof peace of mind.'],
-      segment_insights: [],
-      goal_summary: 'Freelancers strongly want this but are security-conscious.'
-    },
+    insights: { key_findings: [], recommendations: [], goal_summary: "We couldn't generate an executive summary for this run." },
     analysis: {
       questions: [
-        {
-          question_id: 'q04',
-          text: 'Do you keep your business and personal banking accounts strictly separate?',
-          type: 'yes_no',
-          distribution: { No: 8, Yes: 361 }
-        },
-        {
-          question_id: 'q12',
-          text: 'At what monthly subscription price would you consider this too expensive?',
-          type: 'text',
-          distribution: {},
-          sample_answers: ['30', '25', '30', '50']
-        }
-      ],
-      summary: { total_respondents: 369, total_questions: 2 }
+        { text: 'Do you keep your business and personal banking accounts strictly separate?', type: 'yes_no', distribution: { No: 8, Yes: 361 } },
+        { text: 'At what monthly subscription price would you consider this too expensive?', type: 'text', distribution: {}, sample_answers: ['30', '25', '30', '50'] }
+      ]
     }
   };
 
   const summary = server.summarizeSimulationInsights(simulation);
 
-  assert.match(summary, /completed \(369\/357 respondents\)/);
-  assert.match(summary, /Strong demand among freelancers/);
-  assert.match(summary, /Lead messaging with audit-proof peace of mind/);
   assert.match(summary, /Yes \(98%\)/);
   assert.match(summary, /sample respondent answers: 30; 25; 30/);
 });
 
-test('summarizeSimulationInsights returns an empty string for a still-running simulation with no analysis yet', () => {
+test('summarizeSimulationInsights returns just a status line for a still-running simulation with no analysis yet', () => {
   const summary = server.summarizeSimulationInsights({ status: 'running', respondent_count: 0, desired_respondent_count: 357 });
   assert.match(summary, /Simulation status: running \(0\/357 respondents\)/);
-  assert.doesNotMatch(summary, /Key findings/);
+  assert.doesNotMatch(summary, /Key finding/);
 });
 
-test('buildPitchDeckPrompt cites real simulation percentages and quotes instead of dumping raw JSON', () => {
+test('buildPitchDeckPrompt cites real simulation findings instead of dumping raw JSON', () => {
   const session = {
-    pitch: 'AI expense copilot for freelancers',
-    preview: server.buildPreviewReport('AI expense copilot for freelancers')
-  };
-  const simulation = {
-    status: 'completed',
-    respondent_count: 369,
-    desired_respondent_count: 357,
-    insights: { key_findings: ['Freelancers miss deductions due to disorganized receipts.'] },
-    analysis: { questions: [{ text: 'Would you pay for this?', type: 'multiple_choice', distribution: { Yes: 300, No: 69 } }] }
+    pitch: 'AI scheduling concierge for small clinics',
+    preview: server.buildPreviewReport('AI scheduling concierge for small clinics')
   };
 
-  const prompt = server.buildPitchDeckPrompt(session, simulation);
+  const prompt = server.buildPitchDeckPrompt(session, REAL_COMPLETED_SIMULATION_FIXTURE);
 
   assert.match(prompt, /Cite specific numbers, percentages, or respondent quotes/);
-  assert.match(prompt, /Freelancers miss deductions due to disorganized receipts/);
-  assert.match(prompt, /Yes \(81%\)/);
+  assert.match(prompt, /Product-market fit is exceptionally strong/);
+  assert.doesNotMatch(prompt, /\[object Object\]/);
   assert.doesNotMatch(prompt, /"respondent_count":369/);
 });
 
@@ -626,6 +691,12 @@ test('fetchSimulationInsights returns null when no simulation id or API key is a
   const insights = await server.fetchSimulationInsights('', { request: async () => { throw new Error('should not be called'); } });
   assert.equal(insights, null);
 });
+
+async function countSlides(buffer) {
+  const JSZip = (await import('jszip')).default;
+  const zip = await JSZip.loadAsync(buffer);
+  return Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).length;
+}
 
 test('buildPitchDeckBuffer produces a valid pptx (zip) buffer with one slide per section', async () => {
   const session = {
@@ -639,6 +710,25 @@ test('buildPitchDeckBuffer produces a valid pptx (zip) buffer with one slide per
   assert.ok(Buffer.isBuffer(buffer));
   assert.equal(buffer.slice(0, 2).toString(), 'PK');
   assert.ok(buffer.length > 1000);
+  assert.equal(await countSlides(buffer), 10);
+});
+
+test('buildPitchDeckBuffer adds dedicated slides for real simulation findings and recommendations when present', async () => {
+  const session = { validation_id: 'deck-test-4b', pitch: 'AI scheduling concierge for small clinics' };
+  const baseDeck = server.buildPitchDeckFallback({ ...session, preview: server.buildPreviewReport(session.pitch) });
+
+  const bufferWithout = await server.buildPitchDeckBuffer(session, baseDeck);
+  const slidesWithout = await countSlides(bufferWithout);
+
+  const deckWithInsights = {
+    ...baseDeck,
+    simulation_key_findings: [{ text: 'Strong product-market fit.', confidence: 'high', evidence: ['Q09'], followUpLabel: 'Map Booking Journeys' }],
+    simulation_recommendations: [{ text: 'Lead with the B2B pitch.', priority: 'high' }]
+  };
+  const bufferWith = await server.buildPitchDeckBuffer(session, deckWithInsights);
+  const slidesWith = await countSlides(bufferWith);
+
+  assert.equal(slidesWith, slidesWithout + 2);
 });
 
 test('verifyPitchDeckPaid rejects a checkout session that is not marked for the pitch deck product', async () => {
