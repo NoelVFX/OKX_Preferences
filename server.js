@@ -68,7 +68,7 @@ const HERMES_PROVIDER = process.env.HERMES_PROVIDER || (
 );
 const HERMES_MODEL = process.env.HERMES_MODEL || (
   HERMES_PROVIDER === 'gemini-api' ? 'gemini-2.0-flash' :
-  HERMES_PROVIDER === 'openai-api' ? 'gpt-5.5' : ''
+  HERMES_PROVIDER === 'openai-api' ? 'gpt-4o-mini' : ''
 );
 
 if (!PREFERENCES_API_KEY) {
