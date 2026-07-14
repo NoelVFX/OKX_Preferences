@@ -68,7 +68,7 @@ const HERMES_PROVIDER = process.env.HERMES_PROVIDER || (
 );
 const HERMES_MODEL = process.env.HERMES_MODEL || (
   HERMES_PROVIDER === 'gemini-api' ? 'gemini-2.0-flash' :
-  HERMES_PROVIDER === 'openai-api' ? 'gpt-4o-mini' : ''
+  HERMES_PROVIDER === 'openai-api' ? 'gpt-5.5' : ''
 );
 
 if (!PREFERENCES_API_KEY) {
@@ -409,15 +409,19 @@ async function runHermesViaOpenAiApi(prompt, { apiKey = process.env.OPENAI_API_K
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let response;
   try {
+    const resolvedModel = model || 'gpt-5.5';
+    const requestBody = {
+      model: resolvedModel,
+      messages: [{ role: 'user', content: prompt }],
+      response_format: { type: 'json_object' }
+    };
+    // GPT-5 reasoning models use their documented reasoning controls and can
+    // reject sampling parameters that older 4o models accepted.
+    if (!resolvedModel.startsWith('gpt-5')) requestBody.temperature = 0.7;
     response = await fetchImpl('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: model || 'gpt-4o-mini',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.7,
-        response_format: { type: 'json_object' }
-      }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal
     });
   } catch (error) {
@@ -578,6 +582,36 @@ function extractSimulationInsightHighlights(simulationInsights) {
   return { keyFindings, recommendations, segmentInsights, goalSummary: insights.goal_summary || '' };
 }
 
+function extractSimulationEvidence(simulationInsights) {
+  const questions = Array.isArray(simulationInsights?.analysis?.questions) ? simulationInsights.analysis.questions : [];
+  const metrics = [];
+  const quotes = [];
+  for (const question of questions) {
+    const questionText = String(question?.text || question?.question || '').trim();
+    const distribution = question?.distribution;
+    if (distribution && typeof distribution === 'object' && !Array.isArray(distribution)) {
+      const entries = Object.entries(distribution)
+        .map(([label, count]) => [String(label), Number(count)])
+        .filter(([, count]) => Number.isFinite(count) && count >= 0);
+      const total = entries.reduce((sum, [, count]) => sum + count, 0);
+      for (const [label, count] of entries.sort((a, b) => b[1] - a[1]).slice(0, 3)) {
+        metrics.push({ question: questionText, label, count, total, percentage: total ? Math.round((count / total) * 1000) / 10 : 0 });
+      }
+    }
+    for (const answer of (Array.isArray(question?.sample_answers) ? question.sample_answers : []).slice(0, 3)) {
+      const text = String(answer || '').trim();
+      if (text) quotes.push({ question: questionText, text });
+    }
+  }
+  return { metrics, quotes };
+}
+
+function hasSimulationResultData(simulationInsights) {
+  const highlights = extractSimulationInsightHighlights(simulationInsights);
+  const evidence = extractSimulationEvidence(simulationInsights);
+  return Boolean(highlights.keyFindings.length || highlights.recommendations.length || highlights.segmentInsights.length || evidence.metrics.length || evidence.quotes.length);
+}
+
 // Turns a live simulation payload into compact, prompt-friendly text instead
 // of dumping raw JSON, since a completed simulation's full payload can be
 // tens of KB.
@@ -695,7 +729,10 @@ async function buildHermesPitchDeckReport(session, { runHermes = defaultHermesRu
   const highlightFields = {
     simulation_key_findings: highlights.keyFindings,
     simulation_recommendations: highlights.recommendations,
-    simulation_segment_insights: highlights.segmentInsights
+    simulation_segment_insights: highlights.segmentInsights,
+    simulation_evidence: extractSimulationEvidence(simulationInsights),
+    simulation_respondent_count: Number(simulationInsights?.respondent_count || 0),
+    simulation_desired_respondent_count: Number(simulationInsights?.desired_respondent_count || 0)
   };
 
   if (!HERMES_PREVIEW_USE_CLI) return { ...fallback, ...highlightFields, deck_source: 'local_fallback', deck_error: 'HERMES_PREVIEW_USE_CLI is disabled' };
@@ -708,6 +745,12 @@ async function buildHermesPitchDeckReport(session, { runHermes = defaultHermesRu
       if (!parsed[key]) throw new Error(`Hermes pitch deck JSON missing key: ${key}`);
     }
     const deck = { ...fallback, ...parsed, ...highlightFields, deck_source: 'hermes_agent', deck_error: '' };
+    if (highlights.segmentInsights.length >= 2) {
+      deck.target_segments = highlights.segmentInsights.slice(0, 2).map((segment) => ({
+        name: segment.segment || segment.text,
+        affinity: segment.sizePct === null ? 'Validated segment' : `${segment.sizePct}% of respondents`
+      }));
+    }
     deck.target_segments = (Array.isArray(deck.target_segments) && deck.target_segments.length) ? deck.target_segments : fallback.target_segments;
     deck.validation_findings = normalizeSummaryMatrix(deck.validation_findings, fallback.validation_findings);
     deck.next_steps = normalizeSummaryMatrix(deck.next_steps, fallback.next_steps);
@@ -719,16 +762,14 @@ async function buildHermesPitchDeckReport(session, { runHermes = defaultHermesRu
   }
 }
 
-// Live Preferences AI status values seen on real simulations are 'running',
-// 'completed', or 'failed'. Our own provisioning can also leave a session at
-// one of these interim statuses before a simulation ever reaches the live
-// API. Only the "still actively running" states should keep the pitch deck
-// button waiting; everything else (including failure) is treated as a
-// terminal state so a customer is never stuck waiting forever.
-const SIMULATION_IN_PROGRESS_STATES = new Set(['running', 'launched', 'not_started']);
-
 async function checkPitchDeckReadiness(session, { fetchInsights = fetchSimulationInsights, buildDeck = buildHermesPitchDeckReport } = {}) {
-  if (session.pitch_deck_ready && session.pitch_deck_content) {
+  const cachedDeck = session.pitch_deck_content;
+  const cachedDeckHasResults = Boolean(
+    cachedDeck?.simulation_key_findings?.length || cachedDeck?.simulation_recommendations?.length ||
+    cachedDeck?.simulation_segment_insights?.length || cachedDeck?.simulation_evidence?.metrics?.length ||
+    cachedDeck?.simulation_evidence?.quotes?.length
+  );
+  if (session.pitch_deck_ready && cachedDeck && session.pitch_deck_simulation_status === 'completed' && cachedDeckHasResults) {
     return {
       deck_ready: true,
       simulation_status: session.pitch_deck_simulation_status || 'completed',
@@ -755,11 +796,21 @@ async function checkPitchDeckReadiness(session, { fetchInsights = fetchSimulatio
     }
   }
 
-  if (SIMULATION_IN_PROGRESS_STATES.has(simulationStatus)) {
-    return { deck_ready: false, simulation_status: simulationStatus, respondent_count: respondentCount, desired_respondent_count: desiredCount };
+  if (simulationStatus !== 'completed') {
+    return { deck_ready: false, simulation_status: simulationStatus, respondent_count: respondentCount, desired_respondent_count: desiredCount, waiting_for: 'simulation_completion' };
   }
 
-  const deck = await buildDeck(session);
+  let completedInsights;
+  try {
+    completedInsights = await fetchInsights(session.simulation_id);
+  } catch (error) {
+    return { deck_ready: false, simulation_status: simulationStatus, respondent_count: respondentCount, desired_respondent_count: desiredCount, waiting_for: 'simulation_results' };
+  }
+  if (!hasSimulationResultData(completedInsights)) {
+    return { deck_ready: false, simulation_status: simulationStatus, respondent_count: respondentCount, desired_respondent_count: desiredCount, waiting_for: 'simulation_results' };
+  }
+
+  const deck = await buildDeck(session, { fetchInsights: async () => completedInsights });
   saveWebSession({
     validation_id: session.validation_id,
     pitch_deck_ready: true,
@@ -844,6 +895,29 @@ function addDeckSegmentsSlide(pptx, heading, segments) {
   return slide;
 }
 
+function addDeckEvidenceSlide(pptx, deck) {
+  const metrics = Array.isArray(deck.simulation_evidence?.metrics) ? deck.simulation_evidence.metrics : [];
+  const slide = pptx.addSlide();
+  slide.background = { color: DECK_COLORS.bg };
+  slide.addText('Preferences AI — Actual Simulation Numbers', { x: 0.6, y: 0.45, w: 8.8, h: 0.7, fontSize: 24, bold: true, color: DECK_COLORS.accent2, fontFace: 'Arial' });
+  slide.addText(`Completed sample: ${deck.simulation_respondent_count || 0} respondents`, { x: 0.6, y: 1.15, w: 8.8, h: 0.35, fontSize: 13, color: DECK_COLORS.muted, fontFace: 'Arial' });
+  const headerOptions = { bold: true, color: DECK_COLORS.text, fill: { color: DECK_COLORS.panel } };
+  const rows = [[
+    { text: 'Survey response', options: headerOptions },
+    { text: 'Count', options: headerOptions },
+    { text: 'Share', options: headerOptions }
+  ]];
+  for (const metric of metrics.slice(0, 8)) {
+    rows.push([
+      { text: `${metric.question}: ${metric.label}`, options: { color: DECK_COLORS.text, fill: { color: DECK_COLORS.bg } } },
+      { text: `${metric.count} / ${metric.total}`, options: { color: DECK_COLORS.text, fill: { color: DECK_COLORS.bg } } },
+      { text: `${metric.percentage}%`, options: { bold: true, color: DECK_COLORS.accent2, fill: { color: DECK_COLORS.bg } } }
+    ]);
+  }
+  slide.addTable(rows, { x: 0.6, y: 1.65, w: 8.8, fontSize: 11, border: { type: 'solid', color: '2A3157', pt: 1 } });
+  return slide;
+}
+
 async function buildPitchDeckBuffer(session, deck) {
   const pptx = new PptxGenJS();
   pptx.layout = 'LAYOUT_16x9';
@@ -852,6 +926,7 @@ async function buildPitchDeckBuffer(session, deck) {
   addDeckBodySlide(pptx, 'Problem', deck.problem);
   addDeckBodySlide(pptx, 'Solution', deck.solution);
   addDeckSegmentsSlide(pptx, 'Target Segments (Preferences AI Validated)', deck.target_segments);
+  addDeckEvidenceSlide(pptx, deck);
   addDeckBodySlide(pptx, 'Market Opportunity', deck.market_opportunity);
   addDeckBulletSlide(pptx, 'Validation Findings', deck.validation_findings);
   if (deck.simulation_key_findings?.length) {
@@ -1692,9 +1767,14 @@ app.get('/api/session/:validationId/pitch-deck/download', async (req, res) => {
   }
 
   try {
-    const deck = (session.pitch_deck_ready && session.pitch_deck_content)
-      ? session.pitch_deck_content
-      : await buildHermesPitchDeckReport(session);
+    const readiness = await checkPitchDeckReadiness(session);
+    if (!readiness.deck_ready) {
+      console.warn(`Pitch deck download blocked until completed simulation results are available: ${readiness.simulation_status}`);
+      return res.redirect(303, backUrl);
+    }
+    const refreshedSession = getWebSession(validationId) || session;
+    const deck = refreshedSession.pitch_deck_content;
+    if (!deck) throw new Error('Pitch deck content was not cached after readiness verification.');
     const buffer = await buildPitchDeckBuffer(session, deck);
     const safeName = String(session.pitch || 'pitch-deck').slice(0, 40).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'pitch-deck';
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
