@@ -459,6 +459,24 @@ test('verifyPaidUnlock recovers paid web session from Stripe metadata when Verce
   assert.equal(server.getWebSession(validationId).paid, true);
 });
 
+test('verifyPaidUnlock stays unlocked on a later /success visit with no session_id (e.g. redirected back from the pitch deck checkout)', async () => {
+  const validationId = 'already-paid-revisit-test';
+  server.saveWebSession({
+    validation_id: validationId,
+    pitch: 'AI scheduling concierge for small clinics',
+    preview: server.buildPreviewReport('AI scheduling concierge for small clinics'),
+    paid: true,
+    paid_at: new Date().toISOString()
+  });
+
+  const result = await server.verifyPaidUnlock(validationId, '', {
+    retrieveCheckoutSession: async () => { throw new Error('should not call Stripe for an already-paid session'); }
+  });
+
+  assert.equal(result.paid, true);
+  assert.equal(result.validation_id, validationId);
+});
+
 test('buildHermesPitchDeckReport uses Hermes JSON over the local fallback', async () => {
   const session = {
     validation_id: 'deck-test-1',

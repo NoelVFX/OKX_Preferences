@@ -1160,6 +1160,11 @@ function sessionFromCheckoutMetadata(checkoutSession, requestedValidationId = ''
 
 async function verifyPaidUnlock(validationId, checkoutSessionId, { retrieveCheckoutSession = null } = {}) {
   const existingSession = validationId ? getWebSession(validationId) : null;
+  // A validation that was already verified paid should stay unlocked on any
+  // later /success visit (e.g. redirected back from the separate pitch deck
+  // checkout, which carries its own deck_session_id, not this one) without
+  // re-requiring a base-unlock session_id or another Stripe round-trip.
+  if (existingSession?.paid) return existingSession;
   if (!WEB_REQUIRE_PAYMENT_FOR_DASHBOARD_LINKS) {
     if (existingSession) return { ...existingSession, paid: true };
     if (!checkoutSessionId) throw new Error('Validation session not found.');
