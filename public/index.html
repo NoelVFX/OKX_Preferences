@@ -8,23 +8,38 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <div class="bg-aurora" aria-hidden="true">
+      <div class="blob blob-1"></div>
+      <div class="blob blob-2"></div>
+      <div class="blob blob-3"></div>
+    </div>
+
     <main class="shell">
       <section class="hero-card split">
         <div class="hero-copy">
-          <p class="eyebrow">Product validation as a service</p>
-          <h1>Preferences ASP Concierge</h1>
-          <p class="lede">
+          <p class="eyebrow reveal" style="animation-delay:0ms">Product validation as a service</p>
+          <h1 class="reveal" style="animation-delay:60ms">Preferences ASP Concierge</h1>
+          <p class="lede reveal" style="animation-delay:120ms">
             A standalone Agent Service Provider that helps founders, builders, and product teams validate an idea before they spend on build or marketing. Submit a concept and the concierge creates a pitch-specific Preferences AI preview, provisions survey/simulation assets, and packages the unlock flow for a paid validation service.
           </p>
-          <div class="badges">
+          <div class="badges reveal" style="animation-delay:180ms">
             <span>Agent Service Provider</span>
             <span>Preferences AI survey + simulation</span>
             <span>Paid dashboard unlock</span>
           </div>
         </div>
-        <form id="validate-form" class="input-panel">
-          <label for="pitch">Real-world product, startup, or workflow concept</label>
+        <form id="validate-form" class="input-panel reveal" style="animation-delay:100ms">
+          <div class="field-label-row">
+            <label for="pitch">Real-world product, startup, or workflow concept</label>
+            <span id="char-count" class="char-count">0 / 1000</span>
+          </div>
           <textarea id="pitch" name="pitch" rows="7" maxlength="1000" placeholder="Example: AI scheduling concierge for small clinics that handles missed calls, patient reminders, and booking follow-ups as a paid validation service." required></textarea>
+          <div class="chip-row" id="example-chips">
+            <button type="button" class="chip" data-pitch="AI scheduling concierge for small clinics that handles missed calls, patient reminders, and booking follow-ups.">🩺 Clinic scheduling</button>
+            <button type="button" class="chip" data-pitch="A subscription box that curates local, small-batch coffee roasters for remote workers.">☕ Coffee subscription</button>
+            <button type="button" class="chip" data-pitch="An AI copilot that drafts and files expense reports for freelance contractors.">🧾 Expense copilot</button>
+            <button type="button" class="chip" data-pitch="A marketplace connecting boutique fitness studios with corporate wellness budgets.">🏋️ Fitness marketplace</button>
+          </div>
           <button id="submit-button" type="submit">Generate ASP validation preview</button>
           <p class="fine-print">
             Live API runs can take 1-3 minutes. Keep this tab open while Preferences AI survey, simulation, and unlock resources are prepared.
@@ -33,44 +48,51 @@
       </section>
 
       <section id="status-card" class="status-card hidden" aria-live="polite">
-        <div class="spinner"></div>
-        <div>
-          <strong id="status-title">Building ASP validation preview…</strong>
-          <p id="status-text">Hermes Agent is framing this as a standalone Agent Service Provider.</p>
+        <div class="status-head">
+          <div class="spinner"></div>
+          <div>
+            <strong id="status-title">Building ASP validation preview…</strong>
+            <p id="status-text" class="fine-print" style="margin-top:2px">Hermes Agent is framing this as a standalone Agent Service Provider.</p>
+          </div>
+          <span id="status-timer" class="status-timer">0:00</span>
         </div>
+        <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
+        <ol id="progress-steps" class="progress-steps"></ol>
       </section>
 
       <section id="result" class="result-grid hidden">
-        <article class="result-card full">
+        <article class="result-card full reveal">
           <p class="eyebrow">Free ASP preview report</p>
           <h2 id="result-pitch"></h2>
           <p id="result-category" class="muted"></p>
         </article>
 
-        <article class="result-card">
+        <article class="result-card tilt reveal" style="animation-delay:60ms">
           <p class="eyebrow">Target Demographic A</p>
           <h3 id="demo-a"></h3>
-          <div class="metric"><span id="affinity-a"></span><small>Preview affinity</small></div>
+          <div class="metric"><span id="affinity-a">0%</span><small>Preview affinity</small></div>
+          <div class="affinity-track"><div id="affinity-a-fill" class="affinity-fill"></div></div>
         </article>
 
-        <article class="result-card">
+        <article class="result-card tilt reveal" style="animation-delay:120ms">
           <p class="eyebrow">Target Demographic B</p>
           <h3 id="demo-b"></h3>
-          <div class="metric"><span id="affinity-b"></span><small>Preview affinity</small></div>
+          <div class="metric"><span id="affinity-b">0%</span><small>Preview affinity</small></div>
+          <div class="affinity-track"><div id="affinity-b-fill" class="affinity-fill"></div></div>
         </article>
 
-        <article class="result-card full">
+        <article class="result-card full reveal" style="animation-delay:160ms">
           <p class="eyebrow">ASP validation findings</p>
           <ul id="summary-list" class="summary-list"></ul>
         </article>
 
-        <article class="result-card full asset-card">
+        <article class="result-card full asset-card reveal" style="animation-delay:200ms">
           <div>
             <p class="eyebrow">Live ASP resource state</p>
             <h3 id="asset-heading">Preparing dashboard assets</h3>
             <p id="asset-copy" class="muted"></p>
             <dl class="asset-list">
-              <div><dt>Validation ID</dt><dd id="validation-id"></dd></div>
+              <div><dt>Validation ID</dt><dd id="validation-id"><span id="validation-id-text"></span><button type="button" id="copy-validation-id" class="copy-btn">Copy</button></dd></div>
               <div><dt>Survey API State</dt><dd id="survey-id"></dd></div>
               <div><dt>Simulation State</dt><dd id="simulation-id"></dd></div>
               <div><dt>Estimated panel</dt><dd id="estimate"></dd></div>
@@ -87,6 +109,8 @@
       </section>
     </main>
 
-    <script src="/app.js?v=standalone-asp-20260713" type="module"></script>
+    <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+
+    <script src="/app.js?v=standalone-asp-20260714" type="module"></script>
   </body>
 </html>
