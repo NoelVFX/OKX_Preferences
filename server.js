@@ -651,6 +651,59 @@ async function buildHermesPitchDeckReport(session, { runHermes = defaultHermesRu
   }
 }
 
+// Live Preferences AI status values seen on real simulations are 'running',
+// 'completed', or 'failed'. Our own provisioning can also leave a session at
+// one of these interim statuses before a simulation ever reaches the live
+// API. Only the "still actively running" states should keep the pitch deck
+// button waiting; everything else (including failure) is treated as a
+// terminal state so a customer is never stuck waiting forever.
+const SIMULATION_IN_PROGRESS_STATES = new Set(['running', 'launched', 'not_started']);
+
+async function checkPitchDeckReadiness(session, { fetchInsights = fetchSimulationInsights, buildDeck = buildHermesPitchDeckReport } = {}) {
+  if (session.pitch_deck_ready && session.pitch_deck_content) {
+    return {
+      deck_ready: true,
+      simulation_status: session.pitch_deck_simulation_status || 'completed',
+      respondent_count: session.pitch_deck_respondent_count || 0,
+      desired_respondent_count: session.pitch_deck_desired_respondent_count || 0
+    };
+  }
+
+  let simulationStatus = session.simulation_id ? (session.simulation_status || 'unknown') : 'not_available';
+  let respondentCount = 0;
+  let desiredCount = 0;
+
+  if (session.simulation_id) {
+    try {
+      const insights = await fetchInsights(session.simulation_id);
+      if (insights) {
+        simulationStatus = insights.status || simulationStatus;
+        respondentCount = Number(insights.respondent_count || 0);
+        desiredCount = Number(insights.desired_respondent_count || 0);
+      }
+    } catch (error) {
+      console.warn(`⚠️ Could not refresh simulation status for pitch deck readiness check (continuing to wait): ${error.message}`);
+      return { deck_ready: false, simulation_status: simulationStatus, respondent_count: respondentCount, desired_respondent_count: desiredCount };
+    }
+  }
+
+  if (SIMULATION_IN_PROGRESS_STATES.has(simulationStatus)) {
+    return { deck_ready: false, simulation_status: simulationStatus, respondent_count: respondentCount, desired_respondent_count: desiredCount };
+  }
+
+  const deck = await buildDeck(session);
+  saveWebSession({
+    validation_id: session.validation_id,
+    pitch_deck_ready: true,
+    pitch_deck_content: deck,
+    pitch_deck_simulation_status: simulationStatus,
+    pitch_deck_respondent_count: respondentCount,
+    pitch_deck_desired_respondent_count: desiredCount
+  });
+
+  return { deck_ready: true, simulation_status: simulationStatus, respondent_count: respondentCount, desired_respondent_count: desiredCount };
+}
+
 const DECK_COLORS = { bg: '0B0F1F', panel: '141A33', accent: '8F7CFF', accent2: '36E7C4', text: 'F5F7FF', muted: 'AEB7D9' };
 
 function addDeckTitleSlide(pptx, deck) {
@@ -1178,7 +1231,7 @@ function friendlyDeckErrorMessage(code) {
   return DECK_ERROR_MESSAGES[code] || DECK_ERROR_MESSAGES.generation_failed;
 }
 
-function renderSuccessPage({ session, unlocked, error, pitchDeckUnlocked, pitchDeckError, deckSessionId }) {
+function renderSuccessPage({ session, unlocked, error, pitchDeckUnlocked, pitchDeckError, pitchDeckReady, pitchDeckStatus, deckSessionId }) {
   const previewItems = (session?.preview?.summary_matrix || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
   const links = unlocked ? `
     <div class="unlock-card success">
@@ -1194,13 +1247,35 @@ function renderSuccessPage({ session, unlocked, error, pitchDeckUnlocked, pitchD
   let pitchDeckSection = '';
   if (unlocked) {
     const validationId = escapeAttr(session.validation_id || '');
-    if (pitchDeckUnlocked) {
-      const downloadHref = `/api/session/${validationId}/pitch-deck/download${deckSessionId ? `?deck_session_id=${escapeAttr(deckSessionId)}` : ''}`;
+    const deckSessionIdAttr = escapeAttr(deckSessionId || '');
+    const deckQuery = deckSessionId ? `?deck_session_id=${deckSessionIdAttr}` : '';
+    if (pitchDeckUnlocked && pitchDeckReady) {
+      const downloadHref = `/api/session/${validationId}/pitch-deck/download${deckQuery}`;
       pitchDeckSection = `
-    <div class="unlock-panel">
+    <div class="unlock-panel" id="pitch-deck-panel">
       <h3>Investor pitch deck</h3>
       <p>Hermes Agent generated a downloadable pitch deck (.pptx) from this concept's validation data.</p>
-      <a class="button-link" href="${downloadHref}">Download pitch deck (.pptx)</a>
+      <a class="button-link" id="deck-action" href="${downloadHref}">Download pitch deck (.pptx)</a>
+    </div>`;
+    } else if (pitchDeckUnlocked) {
+      const downloadHref = `/api/session/${validationId}/pitch-deck/download${deckQuery}`;
+      const statusHref = `/api/session/${validationId}/pitch-deck/status${deckQuery}`;
+      const respondents = pitchDeckStatus?.respondent_count || 0;
+      const desired = pitchDeckStatus?.desired_respondent_count || 0;
+      const progressPct = desired ? Math.min(100, Math.round((respondents / desired) * 100)) : 0;
+      const statusNote = desired
+        ? `Simulation progress: ${respondents} / ${desired} respondents.`
+        : 'Waiting for the Preferences AI simulation to finish running.';
+      pitchDeckSection = `
+    <div class="unlock-panel" id="pitch-deck-panel" data-status-url="${escapeAttr(statusHref)}" data-download-url="${escapeAttr(downloadHref)}">
+      <h3>Investor pitch deck</h3>
+      <p>Hermes Agent will build a downloadable pitch deck (.pptx) once the Preferences AI simulation finishes running.</p>
+      <div class="status-head">
+        <div class="spinner"></div>
+        <button class="button-link disabled" id="deck-action" type="button" disabled>Pitch deck creation in progress</button>
+      </div>
+      <div class="progress-track"><div id="deck-progress-fill" class="progress-fill" style="width:${progressPct}%"></div></div>
+      <p id="deck-status-text" class="fine-print">${escapeHtml(statusNote)}</p>
     </div>`;
     } else {
       const errorNote = pitchDeckError ? `<p class="fine-print">${escapeHtml(friendlyDeckErrorMessage(pitchDeckError))}</p>` : '';
@@ -1214,7 +1289,7 @@ function renderSuccessPage({ session, unlocked, error, pitchDeckUnlocked, pitchD
     }
   }
 
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Preferences ASP Unlock</title><link rel="stylesheet" href="/styles.css"></head><body><main class="shell narrow"><a href="/" class="back-link">← Run another validation</a><section class="hero-card">${links}${pitchDeckSection}<div class="result-card"><p class="eyebrow">Concept</p><h1>${escapeHtml(session?.pitch || 'Preferences ASP validation')}</h1><ul>${previewItems}</ul></div></section></main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Preferences ASP Unlock</title><link rel="stylesheet" href="/styles.css"></head><body><main class="shell narrow"><a href="/" class="back-link">← Run another validation</a><section class="hero-card">${links}${pitchDeckSection}<div class="result-card"><p class="eyebrow">Concept</p><h1>${escapeHtml(session?.pitch || 'Preferences ASP validation')}</h1><ul>${previewItems}</ul></div></section></main><div id="toast-stack" class="toast-stack"></div><script src="/pitch-deck-status.js?v=1" type="module"></script></body></html>`;
 }
 
 function escapeHtml(value) {
@@ -1431,10 +1506,13 @@ app.get('/success', async (req, res) => {
 
   let pitchDeckUnlocked = false;
   let pitchDeckError = '';
+  let pitchDeckReady = false;
+  let pitchDeckStatus = null;
   if (unlocked) {
     const currentSession = getWebSession(validationId);
     if (currentSession?.pitch_deck_paid) {
       pitchDeckUnlocked = true;
+      session = currentSession;
     } else if (deckSessionId) {
       try {
         session = await verifyPitchDeckPaid(validationId, deckSessionId);
@@ -1446,9 +1524,18 @@ app.get('/success', async (req, res) => {
     } else if (req.query.deck_error) {
       pitchDeckError = String(req.query.deck_error);
     }
+
+    if (pitchDeckUnlocked) {
+      try {
+        pitchDeckStatus = await checkPitchDeckReadiness(session);
+        pitchDeckReady = pitchDeckStatus.deck_ready;
+      } catch (err) {
+        console.warn('⚠️ Pitch deck readiness check failed on page load:', err.message);
+      }
+    }
   }
 
-  res.type('html').send(renderSuccessPage({ session, unlocked, error, pitchDeckUnlocked, pitchDeckError, deckSessionId }));
+  res.type('html').send(renderSuccessPage({ session, unlocked, error, pitchDeckUnlocked, pitchDeckError, pitchDeckReady, pitchDeckStatus, deckSessionId }));
 });
 
 app.get('/api/session/:validationId/pitch-deck/checkout', async (req, res) => {
@@ -1467,6 +1554,26 @@ app.get('/api/session/:validationId/pitch-deck/checkout', async (req, res) => {
   }
 });
 
+app.get('/api/session/:validationId/pitch-deck/status', async (req, res) => {
+  const validationId = String(req.params.validationId || '');
+  const deckSessionId = String(req.query.deck_session_id || '');
+
+  let session;
+  try {
+    session = await verifyPitchDeckPaid(validationId, deckSessionId);
+  } catch (error) {
+    return res.json({ paid: false });
+  }
+
+  try {
+    const status = await checkPitchDeckReadiness(session);
+    return res.json({ paid: true, ...status });
+  } catch (error) {
+    console.error('⚠️ Pitch deck readiness check failed:', error.message);
+    return res.json({ paid: true, deck_ready: false, simulation_status: 'unknown', deck_error: 'generation_failed' });
+  }
+});
+
 app.get('/api/session/:validationId/pitch-deck/download', async (req, res) => {
   const validationId = String(req.params.validationId || '');
   const deckSessionId = String(req.query.deck_session_id || '');
@@ -1481,7 +1588,9 @@ app.get('/api/session/:validationId/pitch-deck/download', async (req, res) => {
   }
 
   try {
-    const deck = await buildHermesPitchDeckReport(session);
+    const deck = (session.pitch_deck_ready && session.pitch_deck_content)
+      ? session.pitch_deck_content
+      : await buildHermesPitchDeckReport(session);
     const buffer = await buildPitchDeckBuffer(session, deck);
     const safeName = String(session.pitch || 'pitch-deck').slice(0, 40).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'pitch-deck';
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
@@ -1533,5 +1642,6 @@ export {
   fetchSimulationInsights,
   summarizeSimulationInsights,
   verifyPitchDeckPaid,
+  checkPitchDeckReadiness,
   WEB_PITCH_DECK_PRICE_CENTS
 };

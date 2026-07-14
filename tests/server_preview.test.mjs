@@ -686,3 +686,89 @@ test('verifyPitchDeckPaid recovers from checkout metadata when the local session
   assert.ok(result.preview);
 });
 
+test('checkPitchDeckReadiness keeps waiting while the simulation is still running', async () => {
+  const session = {
+    validation_id: 'deck-readiness-test-1',
+    pitch: 'AI scheduling concierge for small clinics',
+    preview: server.buildPreviewReport('AI scheduling concierge for small clinics'),
+    simulation_id: 'sim_running_test'
+  };
+
+  const status = await server.checkPitchDeckReadiness(session, {
+    fetchInsights: async () => ({ status: 'running', respondent_count: 142, desired_respondent_count: 357 }),
+    buildDeck: async () => { throw new Error('should not generate while still running'); }
+  });
+
+  assert.equal(status.deck_ready, false);
+  assert.equal(status.simulation_status, 'running');
+  assert.equal(status.respondent_count, 142);
+  assert.equal(status.desired_respondent_count, 357);
+  assert.equal(server.getWebSession('deck-readiness-test-1'), null);
+});
+
+test('checkPitchDeckReadiness generates and caches the deck once the simulation completes', async () => {
+  const validationId = 'deck-readiness-test-2';
+  server.saveWebSession({
+    validation_id: validationId,
+    pitch: 'AI scheduling concierge for small clinics',
+    preview: server.buildPreviewReport('AI scheduling concierge for small clinics'),
+    simulation_id: 'sim_completed_test'
+  });
+  const session = server.getWebSession(validationId);
+  let generateCalls = 0;
+
+  const status = await server.checkPitchDeckReadiness(session, {
+    fetchInsights: async () => ({ status: 'completed', respondent_count: 369, desired_respondent_count: 357 }),
+    buildDeck: async () => { generateCalls += 1; return server.buildPitchDeckFallback(session); }
+  });
+
+  assert.equal(status.deck_ready, true);
+  assert.equal(status.simulation_status, 'completed');
+  assert.equal(generateCalls, 1);
+
+  const saved = server.getWebSession(validationId);
+  assert.equal(saved.pitch_deck_ready, true);
+  assert.ok(saved.pitch_deck_content);
+
+  // A second check should reuse the cached deck instead of calling Hermes again.
+  const secondStatus = await server.checkPitchDeckReadiness(saved, {
+    fetchInsights: async () => { throw new Error('should not re-fetch once cached'); },
+    buildDeck: async () => { generateCalls += 1; return server.buildPitchDeckFallback(session); }
+  });
+  assert.equal(secondStatus.deck_ready, true);
+  assert.equal(generateCalls, 1);
+});
+
+test('checkPitchDeckReadiness treats a failed or missing simulation as terminal so the deck still generates', async () => {
+  const session = {
+    validation_id: 'deck-readiness-test-3',
+    pitch: 'AI scheduling concierge for small clinics',
+    preview: server.buildPreviewReport('AI scheduling concierge for small clinics')
+    // no simulation_id: survey/simulation provisioning never launched one
+  };
+
+  const status = await server.checkPitchDeckReadiness(session, {
+    fetchInsights: async () => { throw new Error('should not be called without a simulation_id'); },
+    buildDeck: async () => server.buildPitchDeckFallback(session)
+  });
+
+  assert.equal(status.deck_ready, true);
+  assert.equal(status.simulation_status, 'not_available');
+});
+
+test('checkPitchDeckReadiness keeps waiting (does not generate) when the live status fetch fails transiently', async () => {
+  const session = {
+    validation_id: 'deck-readiness-test-4',
+    pitch: 'AI scheduling concierge for small clinics',
+    preview: server.buildPreviewReport('AI scheduling concierge for small clinics'),
+    simulation_id: 'sim_flaky_test'
+  };
+
+  const status = await server.checkPitchDeckReadiness(session, {
+    fetchInsights: async () => { throw new Error('temporary network error'); },
+    buildDeck: async () => { throw new Error('should not generate on a transient fetch failure'); }
+  });
+
+  assert.equal(status.deck_ready, false);
+});
+
