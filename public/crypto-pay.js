@@ -49,10 +49,12 @@ async function ensureChain(provider, cfg) {
   }
 }
 
-// Connects the wallet, ensures the right chain, and sends a USDT ERC-20
-// transfer of amountBaseUnits to the configured receiving address. Returns the
-// transaction hash. The actual on-chain confirmation + amount/recipient checks
-// happen server-side in the verify endpoint — never trust this hash alone.
+// Connects the wallet, ensures the right chain, and sends the payment to the
+// configured receiving address. In test mode (payment_kind 'native') this is a
+// plain 0-value transfer to the address — a real, explorer-visible tx that
+// costs no real funds; otherwise it's a USDT ERC-20 transfer of amountBaseUnits.
+// Returns the transaction hash. The actual on-chain confirmation +
+// amount/recipient checks happen server-side — never trust this hash alone.
 export async function payUsdt(cfg, amountBaseUnits) {
   const provider = getOkxProvider();
   if (!provider) {
@@ -63,6 +65,14 @@ export async function payUsdt(cfg, amountBaseUnits) {
   if (!from) throw new Error('No account was authorized in OKX Wallet.');
 
   await ensureChain(provider, cfg);
+
+  if (cfg.payment_kind === 'native') {
+    // Zero-value native transfer straight to the receiving address (test/demo).
+    return provider.request({
+      method: 'eth_sendTransaction',
+      params: [{ from, to: cfg.receiving_address, value: '0x0' }]
+    });
+  }
 
   // transfer(address,uint256): selector + padded recipient + padded amount.
   const recipient = pad64(String(cfg.receiving_address).replace(/^0x/, ''));

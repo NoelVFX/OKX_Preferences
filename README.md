@@ -80,6 +80,22 @@ If it is unset (or not a valid address), the crypto option stays hidden and only
 
 **Security notes / limitations:** verification is on-chain and provider-agnostic (any X Layer RPC), but the replay guard and paid state live in the same file-based session store the rest of the app uses, so on Vercel's ephemeral `/tmp` they are best-effort across cold instances (fine for an MVP; use a shared DB/KV for production hardening). Always verify the USDT contract address on the [X Layer explorer](https://www.oklink.com/xlayer) before changing chains or tokens.
 
+### Free testnet demo mode (spend nothing)
+
+To exercise the OKX Wallet flow for a demo without spending any crypto, set `OKX_TEST_MODE=1` and point the chain/RPC at X Layer **testnet**:
+
+```dotenv
+OKX_TEST_MODE=1
+OKX_CHAIN_ID=1952
+OKX_CHAIN_NAME=X Layer Testnet
+OKX_RPC_URL=https://testrpc.xlayer.tech
+OKX_BLOCK_EXPLORER_URL=https://www.oklink.com/xlayer-test
+OKX_MIN_CONFIRMATIONS=0
+OKX_RECEIVING_ADDRESS=0xYourTestnetWalletAddress
+```
+
+In test mode the required amount is **0** and the payment becomes a plain **zero-value native transfer** to the receiving address (no USDT/token contract involved), so it works on testnet with no real funds — you only need free testnet OKB for gas from the [X Layer faucet](https://www.okx.com/xlayer/faucet). It is still a real, confirmed, explorer-visible transaction (the server verifies the receipt on-chain), so it shows up in a demo. The button/label reads "0 USDT (testnet demo)" and Stripe prices are unaffected. Set `OKX_TEST_MODE=0` (or remove it) and switch the chain/RPC back to mainnet to charge real USDT again.
+
 ## Local setup
 
 ```bash

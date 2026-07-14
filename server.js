@@ -66,18 +66,27 @@ const OKX_USDT_DECIMALS = Number(process.env.OKX_USDT_DECIMALS || 6);
 const OKX_USDT_SYMBOL = process.env.OKX_USDT_SYMBOL || 'USDT';
 const OKX_MIN_CONFIRMATIONS = Number(process.env.OKX_MIN_CONFIRMATIONS || 1);
 const OKX_REQUEST_TIMEOUT = Number(process.env.OKX_REQUEST_TIMEOUT || 20) * 1000;
+// Demo/test mode: require a ZERO-amount payment as a plain native transfer to
+// the receiving address (no token contract needed), so the flow can be
+// exercised on a testnet for free — it still produces a real, explorer-visible
+// transaction. Set OKX_TEST_MODE=1 and point the chain/RPC at a testnet.
+const OKX_TEST_MODE = ['1', 'true', 'yes'].includes(String(process.env.OKX_TEST_MODE || '').toLowerCase());
+const CRYPTO_PAYMENT_KIND = OKX_TEST_MODE ? 'native' : 'usdt';
 const CRYPTO_PAYMENTS_ENABLED = Boolean(OKX_RECEIVING_ADDRESS && /^0x[0-9a-f]{40}$/.test(OKX_RECEIVING_ADDRESS) && OKX_USDT_CONTRACT);
 
 // ERC-20 transfer(address,uint256) selector and Transfer(address,address,uint256) event topic.
 const ERC20_TRANSFER_SELECTOR = '0xa9059cbb';
 const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 
-// Token base units for a fiat cent amount, as a decimal string. $9.99 with 6
-// decimals => 9,990,000. Uses BigInt so there is never floating-point drift.
+// Required on-chain amount for a fiat cent price, as a decimal base-unit
+// string. In test mode this is always 0 (free demo payment). Otherwise it's
+// the USDT amount: $9.99 with 6 decimals => 9,990,000. BigInt, so no float drift.
 function usdtBaseUnits(cents) {
+  if (OKX_TEST_MODE) return '0';
   return (BigInt(Math.round(Number(cents) || 0)) * (10n ** BigInt(OKX_USDT_DECIMALS)) / 100n).toString();
 }
 function centsToUsdtDisplay(cents) {
+  if (OKX_TEST_MODE) return `0 ${OKX_USDT_SYMBOL} (testnet demo)`;
   return `${((Number(cents) || 0) / 100).toFixed(2)} ${OKX_USDT_SYMBOL}`;
 }
 const SESSION_STORE_PATH = process.env.WEB_SESSION_STORE_PATH || path.join(RUNTIME_WRITABLE_DIR, 'web_sessions.json');
@@ -109,7 +118,9 @@ if (!PREFERENCES_API_KEY) {
 if (!stripe) {
   console.warn('⚠️ STRIPE_SECRET_KEY is not set; paid web unlock checkout links cannot be created.');
 }
-if (CRYPTO_PAYMENTS_ENABLED) {
+if (CRYPTO_PAYMENTS_ENABLED && OKX_TEST_MODE) {
+  console.log(`🧪 OKX Wallet crypto payments in TEST MODE: ${OKX_CHAIN_NAME} (chainId ${OKX_CHAIN_ID}), zero-amount native transfer → ${OKX_RECEIVING_ADDRESS}. No real funds are charged.`);
+} else if (CRYPTO_PAYMENTS_ENABLED) {
   console.log(`OKX Wallet crypto payments enabled: ${OKX_CHAIN_NAME} (chainId ${OKX_CHAIN_ID}), ${OKX_USDT_SYMBOL} ${OKX_USDT_CONTRACT} → ${OKX_RECEIVING_ADDRESS}`);
 } else {
   console.warn('⚠️ OKX_RECEIVING_ADDRESS is not set (or invalid); OKX Wallet crypto payments are disabled. Set it to your X Layer wallet address to enable them.');
@@ -1486,6 +1497,8 @@ async function verifyPitchDeckPaid(validationId, deckCheckoutSessionId, { retrie
 function cryptoConfigForClient() {
   return {
     enabled: CRYPTO_PAYMENTS_ENABLED,
+    test_mode: OKX_TEST_MODE,
+    payment_kind: CRYPTO_PAYMENT_KIND, // 'native' (0-value testnet demo) or 'usdt'
     chain_id: OKX_CHAIN_ID,
     chain_id_hex: OKX_CHAIN_ID_HEX,
     chain_name: OKX_CHAIN_NAME,
@@ -1559,6 +1572,35 @@ async function verifyUsdtPayment(txHash, expectedBaseUnits, { rpc = xlayerRpc } 
   return { status: 'failed', reason: `No USDT transfer of at least the required amount to the receiving address was found in this transaction.` };
 }
 
+// Test/demo mode: verify a plain native transfer (any value, typically 0) to
+// the receiving address. Confirms a real, explorer-visible on-chain tx without
+// requiring any token or real funds.
+async function verifyNativePayment(txHash, { rpc = xlayerRpc } = {}) {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(String(txHash || ''))) return { status: 'failed', reason: 'Malformed transaction hash.' };
+
+  const receipt = await rpc('eth_getTransactionReceipt', [txHash]);
+  if (!receipt) return { status: 'pending' };
+  if (receipt.status !== '0x1') return { status: 'failed', reason: 'The transaction failed on-chain.' };
+
+  if (OKX_MIN_CONFIRMATIONS > 0) {
+    const head = Number(await rpc('eth_blockNumber', []));
+    const mined = Number(receipt.blockNumber);
+    if (!Number.isNaN(head) && !Number.isNaN(mined) && head - mined + 1 < OKX_MIN_CONFIRMATIONS) {
+      return { status: 'pending' };
+    }
+  }
+
+  if (String(receipt.to || '').toLowerCase() !== OKX_RECEIVING_ADDRESS) {
+    return { status: 'failed', reason: 'This transaction was not sent to the receiving address.' };
+  }
+  return { status: 'confirmed', from: String(receipt.from || '').toLowerCase(), value: '0' };
+}
+
+// Dispatches to the native (test-mode) or USDT verifier based on config.
+function verifyCryptoPayment(txHash, expectedBaseUnits, opts = {}) {
+  return OKX_TEST_MODE ? verifyNativePayment(txHash, opts) : verifyUsdtPayment(txHash, expectedBaseUnits, opts);
+}
+
 // Best-effort cross-session replay guard. A given on-chain tx can only unlock
 // one thing once. Backed by its own JSON file so it does not pollute the
 // session store. (Vercel /tmp is ephemeral, so this is best-effort there; the
@@ -1586,7 +1628,7 @@ async function verifyCryptoUnlock(validationId, txHash, { rpc = xlayerRpc } = {}
     const e = new Error('This transaction has already been used for another unlock.'); e.status = 409; throw e;
   }
 
-  const result = await verifyUsdtPayment(txHash, usdtBaseUnits(WEB_PRICE_CENTS), { rpc });
+  const result = await verifyCryptoPayment(txHash, usdtBaseUnits(WEB_PRICE_CENTS), { rpc });
   if (result.status !== 'confirmed') return result;
 
   markCryptoTxUsed(txHash, { validation_id: validationId, purpose: 'unlock' });
@@ -1611,7 +1653,7 @@ async function verifyPitchDeckCryptoPaid(validationId, txHash, { rpc = xlayerRpc
     const e = new Error('This transaction has already been used for another purchase.'); e.status = 409; throw e;
   }
 
-  const result = await verifyUsdtPayment(txHash, usdtBaseUnits(WEB_PITCH_DECK_PRICE_CENTS), { rpc });
+  const result = await verifyCryptoPayment(txHash, usdtBaseUnits(WEB_PITCH_DECK_PRICE_CENTS), { rpc });
   if (result.status !== 'confirmed') return result;
 
   markCryptoTxUsed(txHash, { validation_id: validationId, purpose: 'pitch_deck' });
@@ -2166,6 +2208,7 @@ export {
   cryptoConfigForClient,
   usdtBaseUnits,
   verifyUsdtPayment,
+  verifyNativePayment,
   verifyCryptoUnlock,
   verifyPitchDeckCryptoPaid,
   CRYPTO_PAYMENTS_ENABLED

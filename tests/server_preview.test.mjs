@@ -1045,6 +1045,26 @@ test('verifyUsdtPayment fails a malformed transaction hash without calling the R
   assert.equal(result.status, 'failed');
 });
 
+test('verifyNativePayment (test mode) confirms a zero-value native transfer to the receiving address', async () => {
+  const receipt = { status: '0x1', blockNumber: '0xff0', to: CRYPTO_RECIPIENT, from: PAYER, logs: [] };
+  const result = await server.verifyNativePayment(GOOD_TX, { rpc: mockRpc({ receipt }) });
+  assert.equal(result.status, 'confirmed');
+  assert.equal(result.from, PAYER);
+  assert.equal(result.value, '0');
+});
+
+test('verifyNativePayment fails a native transfer sent to a different address', async () => {
+  const receipt = { status: '0x1', blockNumber: '0xff0', to: '0x9999999999999999999999999999999999999999', from: PAYER, logs: [] };
+  const result = await server.verifyNativePayment(GOOD_TX, { rpc: mockRpc({ receipt }) });
+  assert.equal(result.status, 'failed');
+});
+
+test('verifyNativePayment returns pending when the tx is not mined, and fails a reverted tx', async () => {
+  assert.equal((await server.verifyNativePayment(GOOD_TX, { rpc: mockRpc({ receipt: null }) })).status, 'pending');
+  const reverted = { status: '0x0', blockNumber: '0xff0', to: CRYPTO_RECIPIENT, from: PAYER, logs: [] };
+  assert.equal((await server.verifyNativePayment(GOOD_TX, { rpc: mockRpc({ receipt: reverted }) })).status, 'failed');
+});
+
 test('verifyCryptoUnlock marks a session paid after a confirmed on-chain payment', async () => {
   const validationId = 'crypto-unlock-test-1';
   server.saveWebSession({ validation_id: validationId, pitch: 'AI concierge for clinics', preview: server.buildPreviewReport('AI concierge for clinics') });
