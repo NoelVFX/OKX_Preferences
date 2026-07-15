@@ -385,10 +385,9 @@ async function setupCryptoUnlock() {
     return;
   }
   cryptoPanel.classList.remove('hidden');
-  const sig = cryptoConfig.payment_kind === 'signature';
-  cryptoPayLabel.textContent = sig ? 'Authorize with OKX Wallet (free demo)' : `Pay ${cryptoConfig.unlock.amount_display} with OKX Wallet`;
+  cryptoPayLabel.textContent = `Pay ${cryptoConfig.unlock.amount_display} with OKX Wallet`;
   cryptoNote.textContent = getOkxProvider()
-    ? (sig ? 'Free testnet demo: sign a message in OKX Wallet to unlock — no gas, no tokens.' : `Sends ${cryptoConfig.unlock.amount_display} on ${cryptoConfig.chain_name} to unlock your dashboard.`)
+    ? `Sends ${cryptoConfig.unlock.amount_display} on ${cryptoConfig.chain_name} to unlock your dashboard.`
     : 'Install the OKX Wallet browser extension to pay with crypto.';
 }
 

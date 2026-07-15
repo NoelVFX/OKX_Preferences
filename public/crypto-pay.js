@@ -27,7 +27,7 @@ function pad64(hexNo0x) {
 // Must stay byte-identical to cryptoSignatureMessage() in server.js.
 function signatureMessage(validationId, purpose) {
   const label = purpose === 'pitch_deck' ? 'Investor pitch deck' : 'Dashboard unlock';
-  return `Preferences ASP Concierge — free testnet demo authorization\nProduct: ${label}\nValidation: ${validationId}`;
+  return `Preferences ASP Concierge payment authorization\nProduct: ${label}\nValidation: ${validationId}`;
 }
 
 async function ensureChain(provider, cfg) {
@@ -72,7 +72,7 @@ async function collectPayment({ cfg, amountBaseUnits, validationId, purpose, onS
   if (!from) throw new Error('No account was authorized in OKX Wallet.');
 
   if (cfg.payment_kind === 'signature') {
-    say('Sign the free demo authorization in OKX Wallet…');
+    say('Confirm the payment in OKX Wallet…');
     const message = signatureMessage(validationId, purpose);
     const signature = await provider.request({ method: 'personal_sign', params: [message, from] });
     return { txHash: '', body: { signature, address: from } };

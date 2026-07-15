@@ -110,10 +110,9 @@ if (deckCryptoBtn) {
     try {
       const cfg = await getCryptoConfig();
       if (!cfg.enabled) { deckCryptoBtn.classList.add('hidden'); return; }
-      const sig = cfg.payment_kind === 'signature';
-      if (label) label.textContent = sig ? 'Authorize with OKX Wallet (free demo)' : `Pay ${cfg.pitch_deck.amount_display} with OKX Wallet`;
+      if (label) label.textContent = `Pay ${cfg.pitch_deck.amount_display} with OKX Wallet`;
       if (note) note.textContent = getOkxProvider()
-        ? (sig ? 'Free testnet demo: sign a message in OKX Wallet — no gas, no tokens.' : `Sends ${cfg.pitch_deck.amount_display} on ${cfg.chain_name} to generate your pitch deck.`)
+        ? `Sends ${cfg.pitch_deck.amount_display} on ${cfg.chain_name} to generate your pitch deck.`
         : 'Install the OKX Wallet browser extension to pay with crypto.';
     } catch (error) {
       console.debug('Crypto config unavailable:', error);

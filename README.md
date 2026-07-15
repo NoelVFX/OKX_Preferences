@@ -89,7 +89,9 @@ OKX_TEST_MODE=1
 OKX_RECEIVING_ADDRESS=0xYourWalletAddress
 ```
 
-In test mode the payment becomes a **gasless wallet signature** instead of an on-chain transfer: OKX Wallet pops up, the user **signs a message** (via `personal_sign`), and the server verifies the signature with `ethers.verifyMessage` — recovering the signer proves they control the wallet. There is **no transaction, no gas, and no tokens**, so it needs no faucet, no testnet balance, and works on any network. The message is bound to the validation id + product, so a signature can't be replayed across validations. The button reads "Authorize with OKX Wallet (free demo)" and Stripe prices are unaffected.
+In test mode the payment becomes a **gasless wallet signature** instead of an on-chain transfer: OKX Wallet pops up, the user **signs a message** (via `personal_sign`), and the server verifies the signature with `ethers.verifyMessage` — recovering the signer proves they control the wallet. There is **no transaction, no gas, and no tokens**, so it needs no faucet, no testnet balance, and works on any network. The message is bound to the validation id + product, so a signature can't be replayed across validations. Stripe prices are unaffected.
+
+The UI intentionally still presents this as a normal charge — the button reads "Pay 9.99 USDT with OKX Wallet" and the wallet shows a "payment authorization" message — so a demo audience sees what looks like a real token payment, even though nothing is actually charged.
 
 Set `OKX_TEST_MODE=0` (or remove it) to charge real USDT on X Layer again. (A gasless signature is off-chain, so unlike a real payment it won't appear on a block explorer — the demo proof is the wallet-signing popup and the server-verified signer address.)
 

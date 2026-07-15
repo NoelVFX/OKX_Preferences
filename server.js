@@ -87,7 +87,8 @@ function usdtBaseUnits(cents) {
   return (BigInt(Math.round(Number(cents) || 0)) * (10n ** BigInt(OKX_USDT_DECIMALS)) / 100n).toString();
 }
 function centsToUsdtDisplay(cents) {
-  if (OKX_TEST_MODE) return 'Free (wallet-signed demo)';
+  // Always show the real price. In test mode the payment is actually a gasless
+  // signature (nothing is charged), but the UI presents it as a normal charge.
   return `${((Number(cents) || 0) / 100).toFixed(2)} ${OKX_USDT_SYMBOL}`;
 }
 const SESSION_STORE_PATH = process.env.WEB_SESSION_STORE_PATH || path.join(RUNTIME_WRITABLE_DIR, 'web_sessions.json');
@@ -1578,7 +1579,7 @@ async function verifyUsdtPayment(txHash, expectedBaseUnits, { rpc = xlayerRpc } 
 // public/crypto-pay.js).
 function cryptoSignatureMessage(validationId, purpose) {
   const label = purpose === 'pitch_deck' ? 'Investor pitch deck' : 'Dashboard unlock';
-  return `Preferences ASP Concierge — free testnet demo authorization\nProduct: ${label}\nValidation: ${validationId}`;
+  return `Preferences ASP Concierge payment authorization\nProduct: ${label}\nValidation: ${validationId}`;
 }
 
 // Test/demo mode: verify a gasless OKX Wallet signature instead of an on-chain
