@@ -50,6 +50,19 @@ const WEB_PRODUCT_NAME = process.env.WEB_PRODUCT_NAME || 'Preferences ASP Concie
 const WEB_PITCH_DECK_PRICE_CENTS = Number(process.env.WEB_PITCH_DECK_PRICE_CENTS || WEB_PRICE_CENTS);
 const WEB_PITCH_DECK_PRODUCT_NAME = process.env.WEB_PITCH_DECK_PRODUCT_NAME || 'Preferences ASP Concierge Investor Pitch Deck';
 
+// --- Agent Service Provider (ASP) identity ---
+// Machine-readable identity for listing this backend as an agent / registering
+// its tools on an agent platform (e.g. OKX Onchain OS). All overridable via env.
+const ASP_ID = process.env.ASP_ID || 'preferences-asp-concierge';
+const ASP_NAME = process.env.ASP_NAME || 'Preferences ASP Concierge';
+const ASP_PROVIDER = process.env.ASP_PROVIDER || 'Preferences AI';
+const ASP_CONTACT_EMAIL = process.env.ASP_CONTACT_EMAIL || '';
+const ASP_DESCRIPTION = process.env.ASP_DESCRIPTION
+  || 'Turns any product, startup, or workflow concept into a real-world market-validation service: target demographics, a Preferences AI survey, a digital-population simulation, and a downloadable investor pitch deck built from the simulation results.';
+// Optional on-chain identity for the agent (e.g. an X Layer wallet that owns the
+// ASP). Not invented — falls back to the OKX receiving address at build time.
+const ASP_AGENT_WALLET = (process.env.ASP_AGENT_WALLET || '').trim();
+
 // --- OKX Wallet (X Layer) crypto payment config ---
 // Defaults verified against the live X Layer chain: chainId 196 (0xc4), and
 // USDT at 0x1E4a5963aBFD975d8c9021ce480b42188849D41d reports symbol "USDT",
@@ -1317,6 +1330,181 @@ async function createPitchDeckCheckoutSession(validationSession, req = null) {
   return session;
 }
 
+// ---------------------------------------------------------------------------
+// Agent Service Provider (ASP) discovery surface
+// ---------------------------------------------------------------------------
+// Machine-readable descriptors so this backend can be listed as an agent and
+// its capabilities registered as callable tools on an agent platform. These are
+// standards-based (OpenAPI 3.1 + an OpenAI-plugin-style manifest); map the
+// fields onto your platform's exact schema (e.g. OKX Onchain OS) when you
+// register. `okx` carries OKX-specific hints; fill okx_registration from your
+// OKX developer docs.
+
+// The concrete, machine-callable capabilities this ASP exposes.
+function aspActions(baseUrl) {
+  return [
+    {
+      id: 'validate_concept',
+      name: 'Validate a product concept',
+      description: 'Submit a product/startup/workflow concept. Returns a market-validation preview: pitch category, two target demographic segments with preview affinity scores, product-market-fit findings, and the provisioned Preferences AI survey/simulation state plus a paid-unlock link.',
+      pricing: 'free_preview',
+      method: 'POST',
+      path: '/api/validate',
+      url: `${baseUrl}/api/validate`,
+      input_schema: {
+        type: 'object',
+        required: ['pitch'],
+        properties: { pitch: { type: 'string', minLength: 8, maxLength: 1000, description: 'The product, startup, or workflow concept to validate.' } }
+      },
+      output_schema: {
+        type: 'object',
+        properties: {
+          validation_id: { type: 'string' },
+          pitch: { type: 'string' },
+          preview: {
+            type: 'object',
+            properties: {
+              pitch_category: { type: 'string' },
+              demographic_a: { type: 'string' },
+              demographic_b: { type: 'string' },
+              affinity_a: { type: 'string' },
+              affinity_b: { type: 'string' },
+              summary_matrix: { type: 'array', items: { type: 'string' } }
+            }
+          },
+          survey_id: { type: 'string' },
+          simulation_id: { type: 'string' },
+          live_status: { type: 'string' },
+          checkout_url: { type: 'string', description: 'Stripe Checkout URL to unlock the full dashboard links.' }
+        }
+      }
+    },
+    {
+      id: 'get_validation',
+      name: 'Fetch a validation result',
+      description: 'Retrieve the current state of a previously created validation by its id, including provisioning status and (once paid) survey/simulation dashboard links.',
+      pricing: 'free',
+      method: 'GET',
+      path: '/api/session/{validationId}',
+      url: `${baseUrl}/api/session/{validationId}`,
+      input_schema: { type: 'object', required: ['validationId'], properties: { validationId: { type: 'string' } } }
+    },
+    {
+      id: 'generate_pitch_deck',
+      name: 'Generate an investor pitch deck',
+      description: 'Paid add-on. After a validation is unlocked and its simulation completes, Hermes Agent generates a downloadable .pptx pitch deck built from the real Preferences AI simulation results. Payable by Stripe or OKX Wallet.',
+      pricing: 'paid',
+      price: { amount_cents: WEB_PITCH_DECK_PRICE_CENTS, currency: WEB_PRICE_CURRENCY },
+      method: 'GET',
+      path: '/api/session/{validationId}/pitch-deck/download',
+      url: `${baseUrl}/api/session/{validationId}/pitch-deck/download`,
+      requires: ['validate_concept', 'unlock_payment', 'pitch_deck_payment']
+    }
+  ];
+}
+
+function buildAgentManifest(baseUrl) {
+  return {
+    schema_version: '1.0',
+    asp: {
+      id: ASP_ID,
+      name: ASP_NAME,
+      description: ASP_DESCRIPTION,
+      provider: ASP_PROVIDER,
+      categories: ['market-research', 'product-validation', 'agent-service-provider'],
+      homepage: baseUrl,
+      logo_url: `${baseUrl}/Preferences_Logo.jpeg`,
+      contact_email: ASP_CONTACT_EMAIL
+    },
+    auth: { type: 'none', note: 'The free validate_concept tool is public. Paid actions are gated by Stripe/OKX Wallet payment, not an API key.' },
+    endpoints: {
+      manifest: `${baseUrl}/api/agent/manifest`,
+      openapi: `${baseUrl}/openapi.json`,
+      health: `${baseUrl}/api/agent/health`,
+      well_known_plugin: `${baseUrl}/.well-known/ai-plugin.json`
+    },
+    payments: {
+      currency: WEB_PRICE_CURRENCY,
+      methods: [stripe ? 'stripe' : null, CRYPTO_PAYMENTS_ENABLED ? 'okx_wallet' : null].filter(Boolean),
+      unlock_price_cents: WEB_PRICE_CENTS,
+      pitch_deck_price_cents: WEB_PITCH_DECK_PRICE_CENTS
+    },
+    okx: {
+      onchain_os: true,
+      chain_id: OKX_CHAIN_ID,
+      chain_name: OKX_CHAIN_NAME,
+      wallet_payment_enabled: CRYPTO_PAYMENTS_ENABLED,
+      agent_wallet: ASP_AGENT_WALLET || OKX_RECEIVING_ADDRESS || '',
+      payment_token: { symbol: OKX_USDT_SYMBOL, contract: OKX_USDT_CONTRACT, decimals: OKX_USDT_DECIMALS },
+      // Fill these from your OKX Onchain OS developer docs when registering.
+      okx_registration: { asp_id: '', registry: '', status: 'pending_developer_credentials' }
+    },
+    actions: aspActions(baseUrl)
+  };
+}
+
+// OpenAI-plugin-style discovery manifest (a de-facto standard most agent
+// platforms can ingest to find the OpenAPI spec + basic identity).
+function buildAiPluginManifest(baseUrl) {
+  return {
+    schema_version: 'v1',
+    name_for_human: ASP_NAME,
+    name_for_model: ASP_ID.replace(/[^a-z0-9_]/gi, '_'),
+    description_for_human: ASP_DESCRIPTION,
+    description_for_model: 'Use validate_concept to turn a product/startup/workflow concept into a market-validation report (target demographics, affinity scores, product-market-fit findings, a Preferences AI survey and digital-population simulation). Use get_validation to poll a validation by id. A paid pitch-deck add-on generates a .pptx from the simulation results.',
+    auth: { type: 'none' },
+    api: { type: 'openapi', url: `${baseUrl}/openapi.json` },
+    logo_url: `${baseUrl}/Preferences_Logo.jpeg`,
+    contact_email: ASP_CONTACT_EMAIL,
+    legal_info_url: `${baseUrl}/`
+  };
+}
+
+// Minimal OpenAPI 3.1 for the machine-callable tools.
+function buildOpenApiSpec(baseUrl) {
+  return {
+    openapi: '3.1.0',
+    info: { title: `${ASP_NAME} API`, version: '1.0.0', description: ASP_DESCRIPTION },
+    servers: [{ url: baseUrl }],
+    paths: {
+      '/api/validate': {
+        post: {
+          operationId: 'validate_concept',
+          summary: 'Validate a product/startup/workflow concept',
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { type: 'object', required: ['pitch'], properties: { pitch: { type: 'string', minLength: 8, maxLength: 1000 } } } } }
+          },
+          responses: { '200': { description: 'Validation preview', content: { 'application/json': { schema: { type: 'object' } } } } }
+        }
+      },
+      '/api/session/{validationId}': {
+        get: {
+          operationId: 'get_validation',
+          summary: 'Fetch a validation result by id',
+          parameters: [{ name: 'validationId', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { '200': { description: 'Validation session', content: { 'application/json': { schema: { type: 'object' } } } }, '404': { description: 'Not found' } }
+        }
+      }
+    }
+  };
+}
+
+function agentHealth() {
+  return {
+    status: 'ok',
+    asp_id: ASP_ID,
+    time: new Date().toISOString(),
+    capabilities: {
+      hermes_preview: HERMES_PREVIEW_USE_CLI,
+      preferences_ai: Boolean(PREFERENCES_API_KEY),
+      stripe: Boolean(stripe),
+      okx_wallet: CRYPTO_PAYMENTS_ENABLED,
+      pitch_deck: true
+    }
+  };
+}
+
 function publicWebSession(session) {
   return {
     validation_id: session.validation_id,
@@ -1977,6 +2165,17 @@ app.get('/api/crypto/config', (req, res) => {
   res.json(cryptoConfigForClient());
 });
 
+// --- Agent Service Provider (ASP) discovery endpoints ---
+function aspCors(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'public, max-age=300');
+}
+app.get('/api/agent/manifest', (req, res) => { aspCors(res); res.json(buildAgentManifest(publicBaseUrl(req))); });
+app.get('/.well-known/asp-manifest.json', (req, res) => { aspCors(res); res.json(buildAgentManifest(publicBaseUrl(req))); });
+app.get('/.well-known/ai-plugin.json', (req, res) => { aspCors(res); res.json(buildAiPluginManifest(publicBaseUrl(req))); });
+app.get('/openapi.json', (req, res) => { aspCors(res); res.json(buildOpenApiSpec(publicBaseUrl(req))); });
+app.get('/api/agent/health', (req, res) => { aspCors(res); res.json(agentHealth()); });
+
 // Verify an OKX Wallet USDT payment for the base survey/simulation unlock.
 app.post('/api/session/:validationId/crypto/verify', async (req, res) => {
   const validationId = String(req.params.validationId || '');
@@ -2229,5 +2428,9 @@ export {
   cryptoSignatureMessage,
   verifyCryptoUnlock,
   verifyPitchDeckCryptoPaid,
-  CRYPTO_PAYMENTS_ENABLED
+  CRYPTO_PAYMENTS_ENABLED,
+  buildAgentManifest,
+  buildAiPluginManifest,
+  buildOpenApiSpec,
+  agentHealth
 };

@@ -95,6 +95,21 @@ The UI intentionally still presents this as a normal charge — the button reads
 
 Set `OKX_TEST_MODE=0` (or remove it) to charge real USDT on X Layer again. (A gasless signature is off-chain, so unlike a real payment it won't appear on a block explorer — the demo proof is the wallet-signing popup and the server-verified signer address.)
 
+## Agent Service Provider (ASP) discovery
+
+To be listed as an agent and have its capabilities registered as callable tools on an agent platform, the backend serves standards-based, machine-readable descriptors (all CORS-enabled, cached 5 min):
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/agent/manifest` (also `/.well-known/asp-manifest.json`) | Full ASP manifest: identity, actions with JSON Schemas, payments, and an `okx` on-chain block. |
+| `GET /openapi.json` | OpenAPI 3.1 for the machine-callable tools (`validate_concept`, `get_validation`). |
+| `GET /.well-known/ai-plugin.json` | OpenAI-plugin-style discovery manifest pointing at the OpenAPI spec. |
+| `GET /api/agent/health` | Liveness + capability flags (which integrations are configured). |
+
+The manifest describes three actions — `validate_concept` (free), `get_validation` (free), and `generate_pitch_deck` (paid, Stripe or OKX Wallet) — and carries an `okx` block (chain, payment token, agent wallet). Configure identity via the `ASP_*` env vars (see `.env.example`).
+
+**Registering on OKX Onchain OS:** these descriptors are platform-agnostic on purpose. OKX's exact ASP registration schema, discovery path, auth, and any on-chain registry step are OKX-proprietary and are **not** reproduced here — fill `okx.okx_registration` (currently `status: "pending_developer_credentials"`) and complete the submission using your OKX developer docs/credentials. If registration requires an on-chain step, set `ASP_AGENT_WALLET` to the real address; nothing on-chain is auto-registered. Point OKX's tool/agent registration at `https://<your-domain>/api/agent/manifest` (or `/openapi.json`).
+
 ## Local setup
 
 ```bash

@@ -1120,6 +1120,58 @@ test('verifyPitchDeckCryptoPaid marks the pitch deck paid after a confirmed paym
   assert.equal(saved.pitch_deck_payment_method, 'okx_crypto');
 });
 
+// ---------------------------------------------------------------------------
+// Agent Service Provider (ASP) discovery surface
+// ---------------------------------------------------------------------------
+
+const BASE = 'https://okx-preferences.vercel.app';
+
+test('buildAgentManifest describes the ASP, its actions, payments, and OKX/on-chain block with absolute URLs', () => {
+  const m = server.buildAgentManifest(BASE);
+  assert.equal(m.asp.id, 'preferences-asp-concierge');
+  assert.equal(m.asp.homepage, BASE);
+  assert.match(m.asp.logo_url, /^https:\/\/.*Preferences_Logo\.jpeg$/);
+  assert.equal(m.endpoints.openapi, `${BASE}/openapi.json`);
+
+  const ids = m.actions.map((a) => a.id);
+  assert.deepEqual(ids, ['validate_concept', 'get_validation', 'generate_pitch_deck']);
+  const validate = m.actions.find((a) => a.id === 'validate_concept');
+  assert.equal(validate.method, 'POST');
+  assert.equal(validate.url, `${BASE}/api/validate`);
+  assert.equal(validate.input_schema.required[0], 'pitch');
+
+  assert.ok(m.payments.methods.includes('okx_wallet')); // OKX_RECEIVING_ADDRESS is set in tests
+  assert.equal(m.okx.onchain_os, true);
+  assert.equal(m.okx.chain_id, 196);
+  assert.equal(m.okx.payment_token.symbol, 'USDT');
+  // OKX-specific registration is left for the developer's real credentials.
+  assert.equal(m.okx.okx_registration.status, 'pending_developer_credentials');
+});
+
+test('buildOpenApiSpec is valid OpenAPI 3.1 exposing validate_concept and get_validation', () => {
+  const spec = server.buildOpenApiSpec(BASE);
+  assert.equal(spec.openapi, '3.1.0');
+  assert.equal(spec.servers[0].url, BASE);
+  assert.equal(spec.paths['/api/validate'].post.operationId, 'validate_concept');
+  assert.equal(spec.paths['/api/session/{validationId}'].get.operationId, 'get_validation');
+  assert.ok(spec.paths['/api/validate'].post.requestBody.content['application/json'].schema.required.includes('pitch'));
+});
+
+test('buildAiPluginManifest is a valid plugin manifest pointing at the OpenAPI spec', () => {
+  const p = server.buildAiPluginManifest(BASE);
+  assert.equal(p.schema_version, 'v1');
+  assert.equal(p.api.type, 'openapi');
+  assert.equal(p.api.url, `${BASE}/openapi.json`);
+  assert.match(p.name_for_model, /^[a-z0-9_]+$/i);
+});
+
+test('agentHealth reports status and capability flags', () => {
+  const h = server.agentHealth();
+  assert.equal(h.status, 'ok');
+  assert.equal(h.capabilities.okx_wallet, true);
+  assert.equal(typeof h.capabilities.pitch_deck, 'boolean');
+});
+
 test('verifyCryptoUnlock is idempotent for an already-paid session without touching the RPC (the /success crypto_tx recovery path)', async () => {
   const validationId = 'crypto-unlock-idempotent';
   server.saveWebSession({ validation_id: validationId, pitch: 'Paid idea', preview: server.buildPreviewReport('Paid idea'), paid: true });
