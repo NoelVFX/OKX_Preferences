@@ -110,8 +110,10 @@ if (deckCryptoBtn) {
     try {
       const cfg = await getCryptoConfig();
       if (!cfg.enabled) { deckCryptoBtn.classList.add('hidden'); return; }
+      const sig = cfg.payment_kind === 'signature';
+      if (label) label.textContent = sig ? 'Authorize with OKX Wallet (free demo)' : `Pay ${cfg.pitch_deck.amount_display} with OKX Wallet`;
       if (note) note.textContent = getOkxProvider()
-        ? `Sends ${cfg.pitch_deck.amount_display} on ${cfg.chain_name} to generate your pitch deck.`
+        ? (sig ? 'Free testnet demo: sign a message in OKX Wallet — no gas, no tokens.' : `Sends ${cfg.pitch_deck.amount_display} on ${cfg.chain_name} to generate your pitch deck.`)
         : 'Install the OKX Wallet browser extension to pay with crypto.';
     } catch (error) {
       console.debug('Crypto config unavailable:', error);
@@ -133,13 +135,16 @@ if (deckCryptoBtn) {
         cfg,
         amountBaseUnits: cfg.pitch_deck.amount_base_units,
         verifyUrl: `/api/session/${encodeURIComponent(validationId)}/pitch-deck/crypto/verify`,
+        validationId,
+        purpose: 'pitch_deck',
         onStatus: (msg) => { if (note) note.textContent = msg; if (label) label.textContent = 'Processing…'; }
       });
       if (result.paid) {
-        showToast('success', 'Payment confirmed', 'Your USDT payment was verified on-chain. Preparing your pitch deck…');
-        // Carry the tx hash so /success can re-verify on-chain if this request
-        // lands on a serverless instance that lost the just-saved session.
-        window.location.href = `/success?validation_id=${encodeURIComponent(validationId)}&deck_crypto_tx=${encodeURIComponent(txHash)}`;
+        showToast('success', 'Payment confirmed', 'Your OKX Wallet payment was verified. Preparing your pitch deck…');
+        // Carry the tx hash (on-chain mode) so /success can re-verify if this
+        // request lands on a serverless instance that lost the saved session.
+        const q = txHash ? `&deck_crypto_tx=${encodeURIComponent(txHash)}` : '';
+        window.location.href = `/success?validation_id=${encodeURIComponent(validationId)}${q}`;
       }
     } catch (error) {
       const message = error?.code === 4001 ? 'Payment request was rejected in OKX Wallet.' : (error?.message || 'Crypto payment failed.');

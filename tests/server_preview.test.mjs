@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Wallet } from 'ethers';
 
 const sessionStorePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'preferences-web-sessions-')), 'sessions.json');
 
@@ -1045,24 +1046,33 @@ test('verifyUsdtPayment fails a malformed transaction hash without calling the R
   assert.equal(result.status, 'failed');
 });
 
-test('verifyNativePayment (test mode) confirms a zero-value native transfer to the receiving address', async () => {
-  const receipt = { status: '0x1', blockNumber: '0xff0', to: CRYPTO_RECIPIENT, from: PAYER, logs: [] };
-  const result = await server.verifyNativePayment(GOOD_TX, { rpc: mockRpc({ receipt }) });
+test('verifySignaturePayment (test mode) confirms a gasless wallet signature over the canonical message', async () => {
+  const wallet = Wallet.createRandom();
+  const message = server.cryptoSignatureMessage('val-123', 'pitch_deck');
+  const signature = await wallet.signMessage(message);
+  const result = server.verifySignaturePayment('val-123', 'pitch_deck', { signature, address: wallet.address });
   assert.equal(result.status, 'confirmed');
-  assert.equal(result.from, PAYER);
-  assert.equal(result.value, '0');
+  assert.equal(result.from, wallet.address.toLowerCase());
 });
 
-test('verifyNativePayment fails a native transfer sent to a different address', async () => {
-  const receipt = { status: '0x1', blockNumber: '0xff0', to: '0x9999999999999999999999999999999999999999', from: PAYER, logs: [] };
-  const result = await server.verifyNativePayment(GOOD_TX, { rpc: mockRpc({ receipt }) });
+test('verifySignaturePayment fails when the claimed address does not match the signer', async () => {
+  const wallet = Wallet.createRandom();
+  const signature = await wallet.signMessage(server.cryptoSignatureMessage('val-123', 'unlock'));
+  const result = server.verifySignaturePayment('val-123', 'unlock', { signature, address: '0x0000000000000000000000000000000000000001' });
   assert.equal(result.status, 'failed');
 });
 
-test('verifyNativePayment returns pending when the tx is not mined, and fails a reverted tx', async () => {
-  assert.equal((await server.verifyNativePayment(GOOD_TX, { rpc: mockRpc({ receipt: null }) })).status, 'pending');
-  const reverted = { status: '0x0', blockNumber: '0xff0', to: CRYPTO_RECIPIENT, from: PAYER, logs: [] };
-  assert.equal((await server.verifyNativePayment(GOOD_TX, { rpc: mockRpc({ receipt: reverted }) })).status, 'failed');
+test('verifySignaturePayment rejects a signature made for a different validation (no cross-use)', async () => {
+  const wallet = Wallet.createRandom();
+  // Signed for validation A, but presented for validation B → recovered signer differs.
+  const signature = await wallet.signMessage(server.cryptoSignatureMessage('val-A', 'unlock'));
+  const result = server.verifySignaturePayment('val-B', 'unlock', { signature, address: wallet.address });
+  assert.equal(result.status, 'failed');
+});
+
+test('verifySignaturePayment fails when the signature or address is missing', () => {
+  assert.equal(server.verifySignaturePayment('v', 'unlock', {}).status, 'failed');
+  assert.equal(server.verifySignaturePayment('v', 'unlock', { signature: '0xabc' }).status, 'failed');
 });
 
 test('verifyCryptoUnlock marks a session paid after a confirmed on-chain payment', async () => {

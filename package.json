@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "dotenv": "latest",
+    "ethers": "^6.17.0",
     "express": "latest",
     "node-fetch": "^3.3.2",
     "pptxgenjs": "^4.0.1",

@@ -8,6 +8,7 @@ import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
+import { verifyMessage } from 'ethers';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -66,12 +67,12 @@ const OKX_USDT_DECIMALS = Number(process.env.OKX_USDT_DECIMALS || 6);
 const OKX_USDT_SYMBOL = process.env.OKX_USDT_SYMBOL || 'USDT';
 const OKX_MIN_CONFIRMATIONS = Number(process.env.OKX_MIN_CONFIRMATIONS || 1);
 const OKX_REQUEST_TIMEOUT = Number(process.env.OKX_REQUEST_TIMEOUT || 20) * 1000;
-// Demo/test mode: require a ZERO-amount payment as a plain native transfer to
-// the receiving address (no token contract needed), so the flow can be
-// exercised on a testnet for free — it still produces a real, explorer-visible
-// transaction. Set OKX_TEST_MODE=1 and point the chain/RPC at a testnet.
+// Demo/test mode: the payment becomes a gasless OKX Wallet SIGNATURE instead of
+// an on-chain transfer — the wallet pops up, the user signs a message (no
+// transaction, no gas, no tokens), and the server verifies the signature proves
+// they control the wallet. Set OKX_TEST_MODE=1 to enable. Nothing is charged.
 const OKX_TEST_MODE = ['1', 'true', 'yes'].includes(String(process.env.OKX_TEST_MODE || '').toLowerCase());
-const CRYPTO_PAYMENT_KIND = OKX_TEST_MODE ? 'native' : 'usdt';
+const CRYPTO_PAYMENT_KIND = OKX_TEST_MODE ? 'signature' : 'usdt';
 const CRYPTO_PAYMENTS_ENABLED = Boolean(OKX_RECEIVING_ADDRESS && /^0x[0-9a-f]{40}$/.test(OKX_RECEIVING_ADDRESS) && OKX_USDT_CONTRACT);
 
 // ERC-20 transfer(address,uint256) selector and Transfer(address,address,uint256) event topic.
@@ -86,7 +87,7 @@ function usdtBaseUnits(cents) {
   return (BigInt(Math.round(Number(cents) || 0)) * (10n ** BigInt(OKX_USDT_DECIMALS)) / 100n).toString();
 }
 function centsToUsdtDisplay(cents) {
-  if (OKX_TEST_MODE) return `0 ${OKX_USDT_SYMBOL} (testnet demo)`;
+  if (OKX_TEST_MODE) return 'Free (wallet-signed demo)';
   return `${((Number(cents) || 0) / 100).toFixed(2)} ${OKX_USDT_SYMBOL}`;
 }
 const SESSION_STORE_PATH = process.env.WEB_SESSION_STORE_PATH || path.join(RUNTIME_WRITABLE_DIR, 'web_sessions.json');
@@ -119,7 +120,7 @@ if (!stripe) {
   console.warn('⚠️ STRIPE_SECRET_KEY is not set; paid web unlock checkout links cannot be created.');
 }
 if (CRYPTO_PAYMENTS_ENABLED && OKX_TEST_MODE) {
-  console.log(`🧪 OKX Wallet crypto payments in TEST MODE: ${OKX_CHAIN_NAME} (chainId ${OKX_CHAIN_ID}), zero-amount native transfer → ${OKX_RECEIVING_ADDRESS}. No real funds are charged.`);
+  console.log(`🧪 OKX Wallet payments in TEST MODE: gasless wallet signature (no transaction, no gas, no tokens). Nothing is charged. Verified against wallet ${OKX_RECEIVING_ADDRESS}.`);
 } else if (CRYPTO_PAYMENTS_ENABLED) {
   console.log(`OKX Wallet crypto payments enabled: ${OKX_CHAIN_NAME} (chainId ${OKX_CHAIN_ID}), ${OKX_USDT_SYMBOL} ${OKX_USDT_CONTRACT} → ${OKX_RECEIVING_ADDRESS}`);
 } else {
@@ -1572,33 +1573,30 @@ async function verifyUsdtPayment(txHash, expectedBaseUnits, { rpc = xlayerRpc } 
   return { status: 'failed', reason: `No USDT transfer of at least the required amount to the receiving address was found in this transaction.` };
 }
 
-// Test/demo mode: verify a plain native transfer (any value, typically 0) to
-// the receiving address. Confirms a real, explorer-visible on-chain tx without
-// requiring any token or real funds.
-async function verifyNativePayment(txHash, { rpc = xlayerRpc } = {}) {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(String(txHash || ''))) return { status: 'failed', reason: 'Malformed transaction hash.' };
-
-  const receipt = await rpc('eth_getTransactionReceipt', [txHash]);
-  if (!receipt) return { status: 'pending' };
-  if (receipt.status !== '0x1') return { status: 'failed', reason: 'The transaction failed on-chain.' };
-
-  if (OKX_MIN_CONFIRMATIONS > 0) {
-    const head = Number(await rpc('eth_blockNumber', []));
-    const mined = Number(receipt.blockNumber);
-    if (!Number.isNaN(head) && !Number.isNaN(mined) && head - mined + 1 < OKX_MIN_CONFIRMATIONS) {
-      return { status: 'pending' };
-    }
-  }
-
-  if (String(receipt.to || '').toLowerCase() !== OKX_RECEIVING_ADDRESS) {
-    return { status: 'failed', reason: 'This transaction was not sent to the receiving address.' };
-  }
-  return { status: 'confirmed', from: String(receipt.from || '').toLowerCase(), value: '0' };
+// Canonical message the wallet signs in test/demo (signature) mode. The client
+// must build the byte-identical string, so keep the two in sync (mirrored in
+// public/crypto-pay.js).
+function cryptoSignatureMessage(validationId, purpose) {
+  const label = purpose === 'pitch_deck' ? 'Investor pitch deck' : 'Dashboard unlock';
+  return `Preferences ASP Concierge — free testnet demo authorization\nProduct: ${label}\nValidation: ${validationId}`;
 }
 
-// Dispatches to the native (test-mode) or USDT verifier based on config.
-function verifyCryptoPayment(txHash, expectedBaseUnits, opts = {}) {
-  return OKX_TEST_MODE ? verifyNativePayment(txHash, opts) : verifyUsdtPayment(txHash, expectedBaseUnits, opts);
+// Test/demo mode: verify a gasless OKX Wallet signature instead of an on-chain
+// transfer. Recovering the signer from the signed message proves the user
+// controls that wallet — no gas, no tokens, no transaction required.
+function verifySignaturePayment(validationId, purpose, { signature, address } = {}) {
+  if (!signature || !address) return { status: 'failed', reason: 'Missing wallet signature.' };
+  const message = cryptoSignatureMessage(validationId, purpose);
+  let recovered;
+  try {
+    recovered = verifyMessage(message, signature);
+  } catch {
+    return { status: 'failed', reason: 'The wallet signature could not be verified.' };
+  }
+  if (recovered.toLowerCase() !== String(address).toLowerCase()) {
+    return { status: 'failed', reason: 'The signature does not match the connected wallet.' };
+  }
+  return { status: 'confirmed', from: recovered.toLowerCase() };
 }
 
 // Best-effort cross-session replay guard. A given on-chain tx can only unlock
@@ -1618,51 +1616,71 @@ function markCryptoTxUsed(txHash, claim) {
   writeJsonFile(USED_CRYPTO_TX_PATH, store);
 }
 
-async function verifyCryptoUnlock(validationId, txHash, { rpc = xlayerRpc } = {}) {
+// Normalizes the client payload for a crypto verification. A bare string is
+// treated as a transaction hash (back-compat / the /success recovery param).
+function cryptoPayload(payload) {
+  if (typeof payload === 'string') return { tx_hash: payload };
+  return payload || {};
+}
+
+// Runs the right proof check for the active mode and returns
+// { result, identifier, paidFields }: identifier keys the replay guard, and
+// paidFields are merged onto the session on success.
+async function runCryptoProof(validationId, purpose, payload, expectedBaseUnits, rpc) {
+  const data = cryptoPayload(payload);
+  if (OKX_TEST_MODE) {
+    const identifier = String(data.signature || '').toLowerCase();
+    const result = verifySignaturePayment(validationId, purpose, { signature: data.signature, address: data.address });
+    return { result, identifier, paidFields: { crypto_signature: identifier, crypto_payer_address: result.from } };
+  }
+  const txHash = String(data.tx_hash || '');
+  const identifier = txHash.toLowerCase();
+  const result = await verifyUsdtPayment(txHash, expectedBaseUnits, { rpc });
+  return { result, identifier, paidFields: { crypto_tx_hash: identifier, crypto_payer_address: result.from } };
+}
+
+async function verifyCryptoUnlock(validationId, payload, { rpc = xlayerRpc } = {}) {
   if (!CRYPTO_PAYMENTS_ENABLED) throw new Error('Crypto payments are not configured on this server.');
   const session = validationId ? getWebSession(validationId) : null;
   if (!session) { const e = new Error('Validation session not found.'); e.status = 404; throw e; }
   if (session.paid) return { status: 'confirmed', session };
 
-  if (isCryptoTxUsed(txHash, { validation_id: validationId, purpose: 'unlock' })) {
-    const e = new Error('This transaction has already been used for another unlock.'); e.status = 409; throw e;
+  const { result, identifier, paidFields } = await runCryptoProof(validationId, 'unlock', payload, usdtBaseUnits(WEB_PRICE_CENTS), rpc);
+  if (identifier && isCryptoTxUsed(identifier, { validation_id: validationId, purpose: 'unlock' })) {
+    const e = new Error('This payment has already been used for another unlock.'); e.status = 409; throw e;
   }
-
-  const result = await verifyCryptoPayment(txHash, usdtBaseUnits(WEB_PRICE_CENTS), { rpc });
   if (result.status !== 'confirmed') return result;
 
-  markCryptoTxUsed(txHash, { validation_id: validationId, purpose: 'unlock' });
+  if (identifier) markCryptoTxUsed(identifier, { validation_id: validationId, purpose: 'unlock' });
   const updated = saveWebSession({
     validation_id: validationId,
     paid: true,
     paid_at: new Date().toISOString(),
     payment_method: 'okx_crypto',
-    crypto_tx_hash: String(txHash).toLowerCase(),
-    crypto_payer_address: result.from
+    ...paidFields
   });
   return { status: 'confirmed', session: updated };
 }
 
-async function verifyPitchDeckCryptoPaid(validationId, txHash, { rpc = xlayerRpc } = {}) {
+async function verifyPitchDeckCryptoPaid(validationId, payload, { rpc = xlayerRpc } = {}) {
   if (!CRYPTO_PAYMENTS_ENABLED) throw new Error('Crypto payments are not configured on this server.');
   const session = validationId ? getWebSession(validationId) : null;
   if (!session) { const e = new Error('Validation session not found.'); e.status = 404; throw e; }
   if (session.pitch_deck_paid) return { status: 'confirmed', session };
 
-  if (isCryptoTxUsed(txHash, { validation_id: validationId, purpose: 'pitch_deck' })) {
-    const e = new Error('This transaction has already been used for another purchase.'); e.status = 409; throw e;
+  const { result, identifier, paidFields } = await runCryptoProof(validationId, 'pitch_deck', payload, usdtBaseUnits(WEB_PITCH_DECK_PRICE_CENTS), rpc);
+  if (identifier && isCryptoTxUsed(identifier, { validation_id: validationId, purpose: 'pitch_deck' })) {
+    const e = new Error('This payment has already been used for another purchase.'); e.status = 409; throw e;
   }
-
-  const result = await verifyCryptoPayment(txHash, usdtBaseUnits(WEB_PITCH_DECK_PRICE_CENTS), { rpc });
   if (result.status !== 'confirmed') return result;
 
-  markCryptoTxUsed(txHash, { validation_id: validationId, purpose: 'pitch_deck' });
+  if (identifier) markCryptoTxUsed(identifier, { validation_id: validationId, purpose: 'pitch_deck' });
   const updated = saveWebSession({
     validation_id: validationId,
     pitch_deck_paid: true,
     pitch_deck_paid_at: new Date().toISOString(),
     pitch_deck_payment_method: 'okx_crypto',
-    pitch_deck_crypto_tx_hash: String(txHash).toLowerCase()
+    ...(OKX_TEST_MODE ? { pitch_deck_crypto_signature: paidFields.crypto_signature } : { pitch_deck_crypto_tx_hash: paidFields.crypto_tx_hash })
   });
   return { status: 'confirmed', session: updated };
 }
@@ -1961,9 +1979,8 @@ app.get('/api/crypto/config', (req, res) => {
 // Verify an OKX Wallet USDT payment for the base survey/simulation unlock.
 app.post('/api/session/:validationId/crypto/verify', async (req, res) => {
   const validationId = String(req.params.validationId || '');
-  const txHash = String(req.body?.tx_hash || '').trim();
   try {
-    const result = await verifyCryptoUnlock(validationId, txHash);
+    const result = await verifyCryptoUnlock(validationId, req.body || {});
     if (result.status === 'pending') return res.status(202).json({ pending: true, message: 'Waiting for the transaction to confirm on-chain.' });
     if (result.status === 'failed') return res.status(400).json({ error: result.reason });
     return res.json({ paid: true, validation_id: validationId });
@@ -2115,9 +2132,8 @@ app.get('/api/session/:validationId/pitch-deck/status', async (req, res) => {
 // Verify an OKX Wallet USDT payment for the pitch deck add-on.
 app.post('/api/session/:validationId/pitch-deck/crypto/verify', async (req, res) => {
   const validationId = String(req.params.validationId || '');
-  const txHash = String(req.body?.tx_hash || '').trim();
   try {
-    const result = await verifyPitchDeckCryptoPaid(validationId, txHash);
+    const result = await verifyPitchDeckCryptoPaid(validationId, req.body || {});
     if (result.status === 'pending') return res.status(202).json({ pending: true, message: 'Waiting for the transaction to confirm on-chain.' });
     if (result.status === 'failed') return res.status(400).json({ error: result.reason });
     let readiness = null;
@@ -2208,7 +2224,8 @@ export {
   cryptoConfigForClient,
   usdtBaseUnits,
   verifyUsdtPayment,
-  verifyNativePayment,
+  verifySignaturePayment,
+  cryptoSignatureMessage,
   verifyCryptoUnlock,
   verifyPitchDeckCryptoPaid,
   CRYPTO_PAYMENTS_ENABLED

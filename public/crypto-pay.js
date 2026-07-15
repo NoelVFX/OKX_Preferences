@@ -24,6 +24,12 @@ function pad64(hexNo0x) {
   return hexNo0x.toLowerCase().padStart(64, '0');
 }
 
+// Must stay byte-identical to cryptoSignatureMessage() in server.js.
+function signatureMessage(validationId, purpose) {
+  const label = purpose === 'pitch_deck' ? 'Investor pitch deck' : 'Dashboard unlock';
+  return `Preferences ASP Concierge — free testnet demo authorization\nProduct: ${label}\nValidation: ${validationId}`;
+}
+
 async function ensureChain(provider, cfg) {
   const current = await provider.request({ method: 'eth_chainId' });
   if (String(current).toLowerCase() === String(cfg.chain_id_hex).toLowerCase()) return;
@@ -49,13 +55,14 @@ async function ensureChain(provider, cfg) {
   }
 }
 
-// Connects the wallet, ensures the right chain, and sends the payment to the
-// configured receiving address. In test mode (payment_kind 'native') this is a
-// plain 0-value transfer to the address — a real, explorer-visible tx that
-// costs no real funds; otherwise it's a USDT ERC-20 transfer of amountBaseUnits.
-// Returns the transaction hash. The actual on-chain confirmation +
-// amount/recipient checks happen server-side — never trust this hash alone.
-export async function payUsdt(cfg, amountBaseUnits) {
+// Connects the wallet and produces payment proof for the server to verify.
+// - test mode (payment_kind 'signature'): a gasless personal_sign — no
+//   transaction, no gas, no tokens. Returns { body: { signature, address } }.
+// - otherwise: a USDT ERC-20 transfer of amountBaseUnits, returning
+//   { txHash, body: { tx_hash } }.
+// The real amount/recipient/signer checks always happen server-side.
+async function collectPayment({ cfg, amountBaseUnits, validationId, purpose, onStatus }) {
+  const say = (msg) => { if (onStatus) onStatus(msg); };
   const provider = getOkxProvider();
   if (!provider) {
     throw new Error('OKX Wallet was not detected. Install the OKX Wallet browser extension from okx.com, then reload this page.');
@@ -64,37 +71,36 @@ export async function payUsdt(cfg, amountBaseUnits) {
   const from = accounts && accounts[0];
   if (!from) throw new Error('No account was authorized in OKX Wallet.');
 
-  await ensureChain(provider, cfg);
-
-  if (cfg.payment_kind === 'native') {
-    // Zero-value native transfer straight to the receiving address (test/demo).
-    return provider.request({
-      method: 'eth_sendTransaction',
-      params: [{ from, to: cfg.receiving_address, value: '0x0' }]
-    });
+  if (cfg.payment_kind === 'signature') {
+    say('Sign the free demo authorization in OKX Wallet…');
+    const message = signatureMessage(validationId, purpose);
+    const signature = await provider.request({ method: 'personal_sign', params: [message, from] });
+    return { txHash: '', body: { signature, address: from } };
   }
 
+  await ensureChain(provider, cfg);
+  say('Confirm the payment in OKX Wallet…');
   // transfer(address,uint256): selector + padded recipient + padded amount.
   const recipient = pad64(String(cfg.receiving_address).replace(/^0x/, ''));
   const amountHex = pad64(BigInt(amountBaseUnits).toString(16));
   const data = `0xa9059cbb${recipient}${amountHex}`;
-
-  return provider.request({
+  const txHash = await provider.request({
     method: 'eth_sendTransaction',
     params: [{ from, to: cfg.token_contract, data, value: '0x0' }]
   });
+  return { txHash, body: { tx_hash: txHash } };
 }
 
-// Polls the server verify endpoint until the payment is confirmed on-chain
-// (200) or definitively rejected (non-2xx). 202 means "still confirming".
-export async function pollVerify(verifyUrl, txHash, { onPending } = {}) {
+// Posts the proof to the server verify endpoint until it is accepted (200) or
+// rejected (non-2xx). 202 means "still confirming" (on-chain mode only).
+export async function pollVerify(verifyUrl, body, { onPending } = {}) {
   const deadlineMs = Date.now() + 180000; // ~3 minutes
   let attempt = 0;
   while (Date.now() < deadlineMs) {
     const res = await fetch(verifyUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tx_hash: txHash })
+      body: JSON.stringify(body)
     });
     if (res.status === 202) {
       attempt += 1;
@@ -106,16 +112,15 @@ export async function pollVerify(verifyUrl, txHash, { onPending } = {}) {
     if (!res.ok) throw new Error(data.error || `Verification failed (HTTP ${res.status}).`);
     return data;
   }
-  throw new Error('Timed out waiting for the transaction to confirm. If the payment went through, reload this page in a minute.');
+  throw new Error('Timed out waiting for confirmation. If it went through, reload this page in a minute.');
 }
 
-// End-to-end helper: pay, then poll verification. Calls status callbacks so the
-// caller can drive its own UI (button label, notes, toasts).
-export async function payAndVerify({ cfg, amountBaseUnits, verifyUrl, onStatus }) {
+// End-to-end helper: collect the wallet proof, then verify it server-side.
+// Calls onStatus so the caller can drive its own UI (button label, notes).
+export async function payAndVerify({ cfg, amountBaseUnits, verifyUrl, validationId, purpose, onStatus }) {
   const say = (msg) => { if (onStatus) onStatus(msg); };
-  say('Requesting payment in OKX Wallet…');
-  const txHash = await payUsdt(cfg, amountBaseUnits);
-  say('Transaction submitted. Confirming on-chain…');
-  const result = await pollVerify(verifyUrl, txHash, { onPending: () => say('Waiting for on-chain confirmation…') });
+  const { txHash, body } = await collectPayment({ cfg, amountBaseUnits, validationId, purpose, onStatus });
+  say('Verifying…');
+  const result = await pollVerify(verifyUrl, body, { onPending: () => say('Waiting for confirmation…') });
   return { txHash, result };
 }
