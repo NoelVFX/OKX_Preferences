@@ -254,14 +254,53 @@ function writeJsonFile(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
 }
 
-function saveWebSession(session) {
-  const store = readJsonFile(SESSION_STORE_PATH, {});
-  store[session.validation_id] = { ...(store[session.validation_id] || {}), ...session, updated_at: new Date().toISOString() };
-  writeJsonFile(SESSION_STORE_PATH, store);
-  return store[session.validation_id];
+// --- Durable key-value store (Vercel KV / Upstash Redis) with a file fallback ---
+// Vercel's serverless /tmp is per-instance and not shared, so a file-based
+// session store loses sessions between requests. When a KV REST endpoint is
+// configured (Vercel KV injects KV_REST_API_*, Upstash injects
+// UPSTASH_REDIS_REST_*), sessions live there and are shared across instances.
+// With no KV configured (local dev) it transparently falls back to the file.
+const KV_URL = (process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || '').replace(/\/+$/, '');
+const KV_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || '';
+const KV_ENABLED = Boolean(KV_URL && KV_TOKEN);
+const SESSION_KEY_PREFIX = 'asp:sess:';
+const CRYPTO_TX_KEY_PREFIX = 'asp:ctx:';
+
+async function kvCommand(args) {
+  const res = await fetch(KV_URL, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${KV_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(args)
+  });
+  if (!res.ok) throw new Error(`KV ${args[0]} failed: ${res.status} ${await res.text()}`);
+  return (await res.json()).result;
+}
+async function kvGetJson(key) {
+  const raw = await kvCommand(['GET', key]);
+  if (raw == null) return null;
+  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return null; }
+}
+async function kvSetJson(key, value) {
+  await kvCommand(['SET', key, JSON.stringify(value)]);
 }
 
-function getWebSession(validationId) {
+async function saveWebSession(session) {
+  const validationId = session.validation_id;
+  if (KV_ENABLED) {
+    const existing = (await kvGetJson(SESSION_KEY_PREFIX + validationId)) || {};
+    const merged = { ...existing, ...session, updated_at: new Date().toISOString() };
+    await kvSetJson(SESSION_KEY_PREFIX + validationId, merged);
+    return merged;
+  }
+  const store = readJsonFile(SESSION_STORE_PATH, {});
+  store[validationId] = { ...(store[validationId] || {}), ...session, updated_at: new Date().toISOString() };
+  writeJsonFile(SESSION_STORE_PATH, store);
+  return store[validationId];
+}
+
+async function getWebSession(validationId) {
+  if (!validationId) return null;
+  if (KV_ENABLED) return await kvGetJson(SESSION_KEY_PREFIX + validationId);
   return readJsonFile(SESSION_STORE_PATH, {})[validationId] || null;
 }
 
@@ -900,7 +939,7 @@ async function checkPitchDeckReadiness(session, { fetchInsights = fetchSimulatio
   const deck = completedInsights
     ? await buildDeck(session, { fetchInsights: async () => completedInsights })
     : await buildDeck(session);
-  saveWebSession({
+  await saveWebSession({
     validation_id: session.validation_id,
     pitch_deck_ready: true,
     pitch_deck_content: deck,
@@ -1294,7 +1333,7 @@ async function createCheckoutSession(validationSession, req = null) {
       simulation_status: validationSession.simulation_status || ''
     }
   });
-  saveWebSession({ validation_id: validationSession.validation_id, stripe_checkout_session_id: session.id, checkout_url: session.url });
+  await saveWebSession({ validation_id: validationSession.validation_id, stripe_checkout_session_id: session.id, checkout_url: session.url });
   return session;
 }
 
@@ -1527,7 +1566,7 @@ function publicWebSession(session) {
 }
 
 async function retryPreferencesProvisioning(validationId) {
-  const existing = getWebSession(validationId);
+  const existing = await getWebSession(validationId);
   if (!existing) {
     const error = new Error('Validation session not found.');
     error.status = 404;
@@ -1537,7 +1576,7 @@ async function retryPreferencesProvisioning(validationId) {
   if (!existing.pitch || !existing.preview) throw new Error('Validation session is missing the pitch or preview needed to retry provisioning.');
 
   const assets = await provisionPreferencesAssets(existing.pitch, existing.preview);
-  const updatedSession = saveWebSession({
+  const updatedSession = await saveWebSession({
     validation_id: validationId,
     survey_id: assets.survey_id || '',
     simulation_id: assets.simulation_id || '',
@@ -1553,16 +1592,16 @@ async function retryPreferencesProvisioning(validationId) {
   if (!updatedSession.checkout_url) {
     try {
       const checkoutSession = await createCheckoutSession(updatedSession);
-      if (checkoutSession) return saveWebSession({ validation_id: validationId, checkout_url: checkoutSession.url, stripe_checkout_session_id: checkoutSession.id });
+      if (checkoutSession) return await saveWebSession({ validation_id: validationId, checkout_url: checkoutSession.url, stripe_checkout_session_id: checkoutSession.id });
     } catch (error) {
-      return saveWebSession({ validation_id: validationId, checkout_error: error.message });
+      return await saveWebSession({ validation_id: validationId, checkout_error: error.message });
     }
   }
 
   return updatedSession;
 }
 
-function sessionFromCheckoutMetadata(checkoutSession, requestedValidationId = '') {
+async function sessionFromCheckoutMetadata(checkoutSession, requestedValidationId = '') {
   const metadata = checkoutSession?.metadata || {};
   const validationId = metadata.validation_id || requestedValidationId;
   if (!validationId) throw new Error('Checkout Session metadata is missing validation_id.');
@@ -1589,11 +1628,11 @@ function sessionFromCheckoutMetadata(checkoutSession, requestedValidationId = ''
     paid_at: new Date().toISOString(),
     stripe_checkout_session_id: checkoutSession.id
   };
-  return saveWebSession(recovered);
+  return await saveWebSession(recovered);
 }
 
 async function verifyPaidUnlock(validationId, checkoutSessionId, { retrieveCheckoutSession = null } = {}) {
-  const existingSession = validationId ? getWebSession(validationId) : null;
+  const existingSession = validationId ? await getWebSession(validationId) : null;
   // A validation that was already verified paid should stay unlocked on any
   // later /success visit (e.g. redirected back from the separate pitch deck
   // checkout, which carries its own deck_session_id, not this one) without
@@ -1618,21 +1657,21 @@ async function verifyPaidUnlock(validationId, checkoutSessionId, { retrieveCheck
 
   const finalValidationId = validationId || metadataValidationId;
   if (existingSession) {
-    return saveWebSession({ validation_id: finalValidationId, paid: true, paid_at: new Date().toISOString(), stripe_checkout_session_id: checkoutSession.id });
+    return await saveWebSession({ validation_id: finalValidationId, paid: true, paid_at: new Date().toISOString(), stripe_checkout_session_id: checkoutSession.id });
   }
 
   // Vercel serverless instances only have ephemeral /tmp storage. The validation
   // session created before redirect may not exist in the later /success or
   // /webhook invocation, so recover enough state from signed Stripe Checkout
   // metadata instead of showing "Validation session not found" after payment.
-  return sessionFromCheckoutMetadata(checkoutSession, finalValidationId);
+  return await sessionFromCheckoutMetadata(checkoutSession, finalValidationId);
 }
 
 async function verifyPitchDeckPaid(validationId, deckCheckoutSessionId, { retrieveCheckoutSession = null } = {}) {
-  const existingSession = validationId ? getWebSession(validationId) : null;
+  const existingSession = validationId ? await getWebSession(validationId) : null;
   if (existingSession?.pitch_deck_paid) return existingSession;
   if (!WEB_REQUIRE_PAYMENT_FOR_DASHBOARD_LINKS && existingSession) {
-    return saveWebSession({ validation_id: validationId, pitch_deck_paid: true, pitch_deck_paid_at: new Date().toISOString() });
+    return await saveWebSession({ validation_id: validationId, pitch_deck_paid: true, pitch_deck_paid_at: new Date().toISOString() });
   }
   if (!stripe && !retrieveCheckoutSession) throw new Error('Stripe is not configured on this server.');
   if (!deckCheckoutSessionId) throw new Error('Missing Stripe Checkout session_id for the pitch deck purchase.');
@@ -1656,13 +1695,13 @@ async function verifyPitchDeckPaid(validationId, deckCheckoutSessionId, { retrie
   const finalValidationId = validationId || metadataValidationId;
   const paidFields = { pitch_deck_paid: true, pitch_deck_paid_at: new Date().toISOString(), pitch_deck_checkout_session_id: checkoutSession.id };
   if (existingSession) {
-    return saveWebSession({ validation_id: finalValidationId, ...paidFields });
+    return await saveWebSession({ validation_id: finalValidationId, ...paidFields });
   }
 
   // Same ephemeral-storage recovery as the base unlock, using the pitch this
   // deck checkout carried in its own metadata.
   const pitch = checkoutSession.metadata?.pitch || 'Preferences ASP validation';
-  return saveWebSession({
+  return await saveWebSession({
     validation_id: finalValidationId,
     pitch,
     preview: buildPreviewReport(pitch),
@@ -1788,20 +1827,24 @@ function verifySignaturePayment(validationId, purpose, { signature, address } = 
   return { status: 'confirmed', from: recovered.toLowerCase() };
 }
 
-// Best-effort cross-session replay guard. A given on-chain tx can only unlock
-// one thing once. Backed by its own JSON file so it does not pollute the
-// session store. (Vercel /tmp is ephemeral, so this is best-effort there; the
+// Cross-session replay guard. A given on-chain tx / signature can only unlock
+// one thing once. Uses the durable KV when configured (shared across instances),
+// else a JSON file. (On Vercel /tmp without KV this is best-effort; the
 // per-session paid flag is the primary guard against re-charging the same user.)
 const USED_CRYPTO_TX_PATH = process.env.WEB_CRYPTO_TX_STORE_PATH || path.join(RUNTIME_WRITABLE_DIR, 'used_crypto_txs.json');
-function isCryptoTxUsed(txHash, forClaim) {
-  const used = readJsonFile(USED_CRYPTO_TX_PATH, {})[String(txHash).toLowerCase()];
+async function isCryptoTxUsed(txHash, forClaim) {
+  const key = String(txHash).toLowerCase();
+  const used = KV_ENABLED ? await kvGetJson(CRYPTO_TX_KEY_PREFIX + key) : readJsonFile(USED_CRYPTO_TX_PATH, {})[key];
   if (!used) return false;
   // Idempotent re-verification of the same claim (same validation + purpose) is allowed.
   return !(used.validation_id === forClaim.validation_id && used.purpose === forClaim.purpose);
 }
-function markCryptoTxUsed(txHash, claim) {
+async function markCryptoTxUsed(txHash, claim) {
+  const key = String(txHash).toLowerCase();
+  const record = { ...claim, at: new Date().toISOString() };
+  if (KV_ENABLED) { await kvSetJson(CRYPTO_TX_KEY_PREFIX + key, record); return; }
   const store = readJsonFile(USED_CRYPTO_TX_PATH, {});
-  store[String(txHash).toLowerCase()] = { ...claim, at: new Date().toISOString() };
+  store[key] = record;
   writeJsonFile(USED_CRYPTO_TX_PATH, store);
 }
 
@@ -1830,18 +1873,18 @@ async function runCryptoProof(validationId, purpose, payload, expectedBaseUnits,
 
 async function verifyCryptoUnlock(validationId, payload, { rpc = xlayerRpc } = {}) {
   if (!CRYPTO_PAYMENTS_ENABLED) throw new Error('Crypto payments are not configured on this server.');
-  const session = validationId ? getWebSession(validationId) : null;
+  const session = validationId ? await getWebSession(validationId) : null;
   if (!session) { const e = new Error('Validation session not found.'); e.status = 404; throw e; }
   if (session.paid) return { status: 'confirmed', session };
 
   const { result, identifier, paidFields } = await runCryptoProof(validationId, 'unlock', payload, usdtBaseUnits(WEB_PRICE_CENTS), rpc);
-  if (identifier && isCryptoTxUsed(identifier, { validation_id: validationId, purpose: 'unlock' })) {
+  if (identifier && await isCryptoTxUsed(identifier, { validation_id: validationId, purpose: 'unlock' })) {
     const e = new Error('This payment has already been used for another unlock.'); e.status = 409; throw e;
   }
   if (result.status !== 'confirmed') return result;
 
-  if (identifier) markCryptoTxUsed(identifier, { validation_id: validationId, purpose: 'unlock' });
-  const updated = saveWebSession({
+  if (identifier) await markCryptoTxUsed(identifier, { validation_id: validationId, purpose: 'unlock' });
+  const updated = await saveWebSession({
     validation_id: validationId,
     paid: true,
     paid_at: new Date().toISOString(),
@@ -1853,18 +1896,18 @@ async function verifyCryptoUnlock(validationId, payload, { rpc = xlayerRpc } = {
 
 async function verifyPitchDeckCryptoPaid(validationId, payload, { rpc = xlayerRpc } = {}) {
   if (!CRYPTO_PAYMENTS_ENABLED) throw new Error('Crypto payments are not configured on this server.');
-  const session = validationId ? getWebSession(validationId) : null;
+  const session = validationId ? await getWebSession(validationId) : null;
   if (!session) { const e = new Error('Validation session not found.'); e.status = 404; throw e; }
   if (session.pitch_deck_paid) return { status: 'confirmed', session };
 
   const { result, identifier, paidFields } = await runCryptoProof(validationId, 'pitch_deck', payload, usdtBaseUnits(WEB_PITCH_DECK_PRICE_CENTS), rpc);
-  if (identifier && isCryptoTxUsed(identifier, { validation_id: validationId, purpose: 'pitch_deck' })) {
+  if (identifier && await isCryptoTxUsed(identifier, { validation_id: validationId, purpose: 'pitch_deck' })) {
     const e = new Error('This payment has already been used for another purchase.'); e.status = 409; throw e;
   }
   if (result.status !== 'confirmed') return result;
 
-  if (identifier) markCryptoTxUsed(identifier, { validation_id: validationId, purpose: 'pitch_deck' });
-  const updated = saveWebSession({
+  if (identifier) await markCryptoTxUsed(identifier, { validation_id: validationId, purpose: 'pitch_deck' });
+  const updated = await saveWebSession({
     validation_id: validationId,
     pitch_deck_paid: true,
     pitch_deck_paid_at: new Date().toISOString(),
@@ -2038,14 +2081,14 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (request, 
     const pitch = checkout.metadata?.pitch || 'Dynamic Concept Framework';
 
     if (validationId) {
-      const webSession = getWebSession(validationId);
+      const webSession = await getWebSession(validationId);
       if (webSession) {
-        saveWebSession({ validation_id: validationId, paid: true, paid_at: new Date().toISOString(), stripe_checkout_session_id: checkout.id });
+        await saveWebSession({ validation_id: validationId, paid: true, paid_at: new Date().toISOString(), stripe_checkout_session_id: checkout.id });
         console.log(`💰 [WEB PAYMENT VERIFIED] ${validationId} unlocked for: ${pitch}`);
         return response.json({ received: true, validation_id: validationId });
       }
       if (checkout.payment_status === 'paid') {
-        sessionFromCheckoutMetadata(checkout, validationId);
+        await sessionFromCheckoutMetadata(checkout, validationId);
         console.log(`💰 [WEB PAYMENT RECOVERED FROM STRIPE METADATA] ${validationId} unlocked for: ${pitch}`);
         return response.json({ received: true, validation_id: validationId, recovered: true });
       }
@@ -2110,7 +2153,7 @@ app.post('/api/validate', async (req, res) => {
     assets = { live: false, status: 'failed', message: error.message };
   }
 
-  const validationSession = saveWebSession({
+  const validationSession = await saveWebSession({
     validation_id: validationId,
     created_at: new Date().toISOString(),
     pitch,
@@ -2133,7 +2176,7 @@ app.post('/api/validate', async (req, res) => {
     if (checkoutSession) validationSession.checkout_url = checkoutSession.url;
   } catch (error) {
     console.error('⚠️ Stripe Checkout creation failed:', error.message);
-    saveWebSession({ validation_id: validationId, checkout_error: error.message });
+    await saveWebSession({ validation_id: validationId, checkout_error: error.message });
     validationSession.checkout_error = error.message;
   }
 
@@ -2147,15 +2190,15 @@ app.post('/api/session/:validationId/retry', async (req, res) => {
     res.json(publicWebSession(session));
   } catch (error) {
     const status = error.status || 500;
-    const existing = getWebSession(validationId);
-    if (existing) saveWebSession({ validation_id: validationId, live_status: 'failed', live_error: error.message, simulation_message: error.message });
+    const existing = await getWebSession(validationId);
+    if (existing) await saveWebSession({ validation_id: validationId, live_status: 'failed', live_error: error.message, simulation_message: error.message });
     console.error('⚠️ Web PreferencesAI retry provisioning failed:', error.message);
     res.status(status).json({ error: error.message });
   }
 });
 
-app.get('/api/session/:validationId', (req, res) => {
-  const session = getWebSession(req.params.validationId);
+app.get('/api/session/:validationId', async (req, res) => {
+  const session = await getWebSession(req.params.validationId);
   if (!session) return res.status(404).json({ error: 'Validation session not found.' });
   res.json(publicWebSession(session));
 });
@@ -2196,7 +2239,7 @@ app.get('/success', async (req, res) => {
   const deckSessionId = String(req.query.deck_session_id || '');
   const cryptoTx = String(req.query.crypto_tx || '');
   const deckCryptoTx = String(req.query.deck_crypto_tx || '');
-  let session = validationId ? getWebSession(validationId) : null;
+  let session = validationId ? await getWebSession(validationId) : null;
   let unlocked = false;
   let error = '';
   let pitchDeckUnlocked = false;
@@ -2242,7 +2285,7 @@ app.get('/success', async (req, res) => {
   }
 
   if (unlocked) {
-    const currentSession = getWebSession(validationId);
+    const currentSession = await getWebSession(validationId);
     if (currentSession?.pitch_deck_paid) {
       pitchDeckUnlocked = true;
       session = currentSession;
@@ -2278,7 +2321,7 @@ app.get('/success', async (req, res) => {
     // Prefer the freshest provisioning links so a survey/simulation that
     // finished provisioning (or was retried) after the payment snapshot shows
     // up on the base unlock — the survey link must not wait for a deck purchase.
-    const fresh = validationId ? getWebSession(validationId) : null;
+    const fresh = validationId ? await getWebSession(validationId) : null;
     if (fresh) {
       session = {
         ...session,
@@ -2296,7 +2339,7 @@ app.get('/success', async (req, res) => {
 app.get('/api/session/:validationId/pitch-deck/checkout', async (req, res) => {
   const validationId = String(req.params.validationId || '');
   const backUrl = `/success?validation_id=${encodeURIComponent(validationId)}`;
-  const session = getWebSession(validationId);
+  const session = await getWebSession(validationId);
   if (!session) return res.redirect(303, `${backUrl}&deck_error=checkout_unavailable`);
 
   try {
@@ -2364,7 +2407,7 @@ app.get('/api/session/:validationId/pitch-deck/download', async (req, res) => {
       console.warn(`Pitch deck download blocked until completed simulation results are available: ${readiness.simulation_status}`);
       return res.redirect(303, backUrl);
     }
-    const refreshedSession = getWebSession(validationId) || session;
+    const refreshedSession = await getWebSession(validationId) || session;
     const deck = refreshedSession.pitch_deck_content;
     if (!deck) throw new Error('Pitch deck content was not cached after readiness verification.');
     const buffer = await buildPitchDeckBuffer(session, deck);

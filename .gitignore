@@ -12,6 +12,11 @@ active_session.json
 web_sessions.json
 used_crypto_txs.json
 .hermes_revert_backup_*/
+
+# OKX Onchain OS skills (installed locally via `npx skills add`, not source)
+.agents/
+.claude/skills/
+skills-lock.json
 __pycache__/
 *.py[cod]
 

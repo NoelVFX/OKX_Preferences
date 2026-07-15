@@ -346,7 +346,7 @@ test('buildHermesPreviewReport uses the injected Gemini runner end to end', asyn
 
 test('retryPreferencesProvisioning returns an already-provisioned session without another API call', async () => {
   const validationId = 'retry-test-validation';
-  const existing = server.saveWebSession({
+  const existing = await server.saveWebSession({
     validation_id: validationId,
     pitch: 'AI study coach for college students',
     preview: server.buildPreviewReport('AI study coach for college students'),
@@ -462,12 +462,12 @@ test('verifyPaidUnlock recovers paid web session from Stripe metadata when Verce
   assert.equal(recovered.pitch, 'AI meal planning concierge for busy parents');
   assert.equal(recovered.survey_url, 'https://dashboard.preferencesai.io/surveys/survey_recovered_test');
   assert.equal(recovered.simulation_url, 'https://dashboard.preferencesai.io/simulations/simulation_recovered_test');
-  assert.equal(server.getWebSession(validationId).paid, true);
+  assert.equal((await server.getWebSession(validationId)).paid, true);
 });
 
 test('verifyPaidUnlock stays unlocked on a later /success visit with no session_id (e.g. redirected back from the pitch deck checkout)', async () => {
   const validationId = 'already-paid-revisit-test';
-  server.saveWebSession({
+  await server.saveWebSession({
     validation_id: validationId,
     pitch: 'AI scheduling concierge for small clinics',
     preview: server.buildPreviewReport('AI scheduling concierge for small clinics'),
@@ -739,7 +739,7 @@ test('buildPitchDeckBuffer adds dedicated slides for real simulation findings an
 
 test('verifyPitchDeckPaid rejects a checkout session that is not marked for the pitch deck product', async () => {
   const validationId = 'deck-security-test-1';
-  server.saveWebSession({
+  await server.saveWebSession({
     validation_id: validationId,
     pitch: 'AI scheduling concierge for small clinics',
     preview: server.buildPreviewReport('AI scheduling concierge for small clinics')
@@ -757,12 +757,12 @@ test('verifyPitchDeckPaid rejects a checkout session that is not marked for the 
     }),
     /was not for the pitch deck add-on/
   );
-  assert.equal(server.getWebSession(validationId).pitch_deck_paid, undefined);
+  assert.equal((await server.getWebSession(validationId)).pitch_deck_paid, undefined);
 });
 
 test('verifyPitchDeckPaid marks the session paid for a genuine pitch deck checkout', async () => {
   const validationId = 'deck-security-test-2';
-  server.saveWebSession({
+  await server.saveWebSession({
     validation_id: validationId,
     pitch: 'AI scheduling concierge for small clinics',
     preview: server.buildPreviewReport('AI scheduling concierge for small clinics')
@@ -780,7 +780,7 @@ test('verifyPitchDeckPaid marks the session paid for a genuine pitch deck checko
 
   assert.equal(result.pitch_deck_paid, true);
   assert.equal(result.pitch_deck_checkout_session_id, deckCheckoutSession.id);
-  assert.equal(server.getWebSession(validationId).pitch_deck_paid, true);
+  assert.equal((await server.getWebSession(validationId)).pitch_deck_paid, true);
 });
 
 test('verifyPitchDeckPaid recovers from checkout metadata when the local session was lost (Vercel /tmp eviction)', async () => {
@@ -817,18 +817,18 @@ test('checkPitchDeckReadiness keeps waiting while the simulation is still runnin
   assert.equal(status.simulation_status, 'running');
   assert.equal(status.respondent_count, 142);
   assert.equal(status.desired_respondent_count, 357);
-  assert.equal(server.getWebSession('deck-readiness-test-1'), null);
+  assert.equal(await server.getWebSession('deck-readiness-test-1'), null);
 });
 
 test('checkPitchDeckReadiness generates and caches the deck once the simulation completes', async () => {
   const validationId = 'deck-readiness-test-2';
-  server.saveWebSession({
+  await server.saveWebSession({
     validation_id: validationId,
     pitch: 'AI scheduling concierge for small clinics',
     preview: server.buildPreviewReport('AI scheduling concierge for small clinics'),
     simulation_id: 'sim_completed_test'
   });
-  const session = server.getWebSession(validationId);
+  const session = await server.getWebSession(validationId);
   let generateCalls = 0;
 
   // A completed simulation with real result data (key findings), so the
@@ -853,7 +853,7 @@ test('checkPitchDeckReadiness generates and caches the deck once the simulation 
   assert.equal(status.simulation_status, 'completed');
   assert.equal(generateCalls, 1);
 
-  const saved = server.getWebSession(validationId);
+  const saved = await server.getWebSession(validationId);
   assert.equal(saved.pitch_deck_ready, true);
   assert.ok(saved.pitch_deck_content);
 
@@ -888,14 +888,14 @@ test('checkPitchDeckReadiness falls back to a local deck (not stuck loading) whe
   // simulation_id and simulation_status "insufficient_balance"; the deck must
   // still generate immediately instead of spinning forever.
   const validationId = 'deck-readiness-no-pru';
-  server.saveWebSession({
+  await server.saveWebSession({
     validation_id: validationId,
     pitch: 'AI scheduling concierge for small clinics',
     preview: server.buildPreviewReport('AI scheduling concierge for small clinics'),
     simulation_id: '',
     simulation_status: 'insufficient_balance'
   });
-  const session = server.getWebSession(validationId);
+  const session = await server.getWebSession(validationId);
   let generateCalls = 0;
 
   const status = await server.checkPitchDeckReadiness(session, {
@@ -905,10 +905,10 @@ test('checkPitchDeckReadiness falls back to a local deck (not stuck loading) whe
 
   assert.equal(status.deck_ready, true);
   assert.equal(generateCalls, 1);
-  assert.equal(server.getWebSession(validationId).pitch_deck_ready, true);
+  assert.equal((await server.getWebSession(validationId)).pitch_deck_ready, true);
 
   // And it is cached, so a later poll/reload does not regenerate.
-  const second = await server.checkPitchDeckReadiness(server.getWebSession(validationId), {
+  const second = await server.checkPitchDeckReadiness(await server.getWebSession(validationId), {
     fetchInsights: async () => { throw new Error('no simulation to fetch'); },
     buildDeck: async () => { generateCalls += 1; return server.buildPitchDeckFallback(session); }
   });
@@ -1077,12 +1077,12 @@ test('verifySignaturePayment fails when the signature or address is missing', ()
 
 test('verifyCryptoUnlock marks a session paid after a confirmed on-chain payment', async () => {
   const validationId = 'crypto-unlock-test-1';
-  server.saveWebSession({ validation_id: validationId, pitch: 'AI concierge for clinics', preview: server.buildPreviewReport('AI concierge for clinics') });
+  await server.saveWebSession({ validation_id: validationId, pitch: 'AI concierge for clinics', preview: server.buildPreviewReport('AI concierge for clinics') });
   const receipt = { status: '0x1', blockNumber: '0xff0', logs: [transferLog({ value: '9990000' })] };
 
   const result = await server.verifyCryptoUnlock(validationId, GOOD_TX, { rpc: mockRpc({ receipt }) });
   assert.equal(result.status, 'confirmed');
-  const saved = server.getWebSession(validationId);
+  const saved = await server.getWebSession(validationId);
   assert.equal(saved.paid, true);
   assert.equal(saved.payment_method, 'okx_crypto');
   assert.equal(saved.crypto_tx_hash, GOOD_TX);
@@ -1090,32 +1090,32 @@ test('verifyCryptoUnlock marks a session paid after a confirmed on-chain payment
 
 test('verifyCryptoUnlock rejects replaying the same tx hash for a different validation', async () => {
   const otherValidation = 'crypto-unlock-test-2';
-  server.saveWebSession({ validation_id: otherValidation, pitch: 'Another idea', preview: server.buildPreviewReport('Another idea') });
+  await server.saveWebSession({ validation_id: otherValidation, pitch: 'Another idea', preview: server.buildPreviewReport('Another idea') });
   const receipt = { status: '0x1', blockNumber: '0xff0', logs: [transferLog({ value: '9990000' })] };
 
   await assert.rejects(
     () => server.verifyCryptoUnlock(otherValidation, GOOD_TX, { rpc: mockRpc({ receipt }) }),
     /already been used/
   );
-  assert.notEqual(server.getWebSession(otherValidation).paid, true);
+  assert.notEqual((await server.getWebSession(otherValidation)).paid, true);
 });
 
 test('verifyCryptoUnlock returns pending (does not mark paid) while the tx is unconfirmed', async () => {
   const validationId = 'crypto-unlock-pending';
-  server.saveWebSession({ validation_id: validationId, pitch: 'Pending idea', preview: server.buildPreviewReport('Pending idea') });
+  await server.saveWebSession({ validation_id: validationId, pitch: 'Pending idea', preview: server.buildPreviewReport('Pending idea') });
   const result = await server.verifyCryptoUnlock(validationId, `0x${'b'.repeat(64)}`, { rpc: mockRpc({ receipt: null }) });
   assert.equal(result.status, 'pending');
-  assert.notEqual(server.getWebSession(validationId).paid, true);
+  assert.notEqual((await server.getWebSession(validationId)).paid, true);
 });
 
 test('verifyPitchDeckCryptoPaid marks the pitch deck paid after a confirmed payment', async () => {
   const validationId = 'crypto-deck-test-1';
-  server.saveWebSession({ validation_id: validationId, pitch: 'Deck idea', preview: server.buildPreviewReport('Deck idea'), paid: true });
+  await server.saveWebSession({ validation_id: validationId, pitch: 'Deck idea', preview: server.buildPreviewReport('Deck idea'), paid: true });
   const receipt = { status: '0x1', blockNumber: '0xff0', logs: [transferLog({ value: '9990000' })] };
 
   const result = await server.verifyPitchDeckCryptoPaid(validationId, `0x${'c'.repeat(64)}`, { rpc: mockRpc({ receipt }) });
   assert.equal(result.status, 'confirmed');
-  const saved = server.getWebSession(validationId);
+  const saved = await server.getWebSession(validationId);
   assert.equal(saved.pitch_deck_paid, true);
   assert.equal(saved.pitch_deck_payment_method, 'okx_crypto');
 });
@@ -1174,7 +1174,7 @@ test('agentHealth reports status and capability flags', () => {
 
 test('verifyCryptoUnlock is idempotent for an already-paid session without touching the RPC (the /success crypto_tx recovery path)', async () => {
   const validationId = 'crypto-unlock-idempotent';
-  server.saveWebSession({ validation_id: validationId, pitch: 'Paid idea', preview: server.buildPreviewReport('Paid idea'), paid: true });
+  await server.saveWebSession({ validation_id: validationId, pitch: 'Paid idea', preview: server.buildPreviewReport('Paid idea'), paid: true });
   const result = await server.verifyCryptoUnlock(validationId, `0x${'d'.repeat(64)}`, {
     rpc: async () => { throw new Error('RPC must not be called for an already-paid session'); }
   });
@@ -1184,7 +1184,7 @@ test('verifyCryptoUnlock is idempotent for an already-paid session without touch
 
 test('verifyPitchDeckCryptoPaid is idempotent for an already-deck-paid session without touching the RPC', async () => {
   const validationId = 'crypto-deck-idempotent';
-  server.saveWebSession({ validation_id: validationId, pitch: 'Deck idea', preview: server.buildPreviewReport('Deck idea'), paid: true, pitch_deck_paid: true });
+  await server.saveWebSession({ validation_id: validationId, pitch: 'Deck idea', preview: server.buildPreviewReport('Deck idea'), paid: true, pitch_deck_paid: true });
   const result = await server.verifyPitchDeckCryptoPaid(validationId, `0x${'e'.repeat(64)}`, {
     rpc: async () => { throw new Error('RPC must not be called for an already-deck-paid session'); }
   });

@@ -218,6 +218,17 @@ HERMES_MODEL=gpt-4o-mini
 OPENAI_API_KEY=...
 ```
 
+## Durable session store (required on serverless / Vercel)
+
+Validation sessions are stored in a small key-value store. Locally this is a JSON file, but **Vercel's `/tmp` is per-instance and not shared**, so a file store loses the session between requests — the request that creates it (`/api/validate`) and the ones that read it (crypto verify, the pitch-deck checkout/status, `/success`) land on different instances, producing "validation session not found" and "could not verify a payment" errors.
+
+Fix: provision a shared store and set two env vars. Either backend works (they use the same Upstash REST protocol):
+
+- **Vercel KV** (dashboard → Storage → KV) — auto-injects `KV_REST_API_URL` and `KV_REST_API_TOKEN`.
+- **Upstash Redis** (free tier at upstash.com) — set `KV_REST_API_URL` / `KV_REST_API_TOKEN` to its `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` (both env-var names are accepted).
+
+When set, all sessions and the crypto replay-guard live in the shared store (keys `asp:sess:*` / `asp:ctx:*`). When unset, the app transparently falls back to the local file store, so `npm start`/tests are unaffected.
+
 ## Vercel deployment notes
 
 For Vercel, do not point `DOMAIN` or Stripe webhooks at an ngrok tunnel. The app now derives the public base URL from the incoming Vercel request host, so checkout success/cancel links use the deployed URL, for example:
