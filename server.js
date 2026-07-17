@@ -109,12 +109,26 @@ const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a116
 // the USDT amount: $9.99 with 6 decimals => 9,990,000. BigInt, so no float drift.
 function usdtBaseUnits(cents) {
   if (OKX_TEST_MODE) return '0';
+  return usdtBaseUnitsReal(cents);
+}
+// The real on-chain amount, ignoring OKX_TEST_MODE. x402 offers MUST advertise a
+// non-zero amount — a 0-value challenge fails x402 standard validation — so the
+// x402 gate uses this even while the web app's OKX Wallet demo stays gasless.
+function usdtBaseUnitsReal(cents) {
   return (BigInt(Math.round(Number(cents) || 0)) * (10n ** BigInt(OKX_USDT_DECIMALS)) / 100n).toString();
 }
 function centsToUsdtDisplay(cents) {
   // Always show the real price. In test mode the payment is actually a gasless
   // signature (nothing is charged), but the UI presents it as a normal charge.
   return `${((Number(cents) || 0) / 100).toFixed(2)} ${OKX_USDT_SYMBOL}`;
+}
+// Resolve `promise`, but give up after `ms` and resolve to `fallback` instead.
+// Keeps the x402 paid agent call fast: a population simulation can take far
+// longer than an agent's synchronous tool call should block for.
+function withTimeout(promise, ms, fallback) {
+  let timer;
+  const guard = new Promise((resolve) => { timer = setTimeout(() => resolve(fallback), ms); });
+  return Promise.race([promise, guard]).finally(() => clearTimeout(timer));
 }
 const SESSION_STORE_PATH = process.env.WEB_SESSION_STORE_PATH || path.join(RUNTIME_WRITABLE_DIR, 'web_sessions.json');
 const ACTIVE_MANIFEST_PATH = process.env.MANIFEST_PATH || path.join(RUNTIME_WRITABLE_DIR, 'active_session.json');
@@ -1404,7 +1418,7 @@ function aspActions(baseUrl) {
         scheme: 'exact',
         network: X402_NETWORK,
         asset: OKX_USDT_CONTRACT,
-        amount_base_units: usdtBaseUnits(WEB_PRICE_CENTS),
+        amount_base_units: usdtBaseUnitsReal(WEB_PRICE_CENTS),
         pay_to: OKX_RECEIVING_ADDRESS
       } : undefined,
       method: 'POST',
@@ -1492,7 +1506,7 @@ function buildAgentManifest(baseUrl) {
         scheme: 'exact',
         network: X402_NETWORK,
         asset: OKX_USDT_CONTRACT,
-        amount_base_units: usdtBaseUnits(WEB_PRICE_CENTS),
+        amount_base_units: usdtBaseUnitsReal(WEB_PRICE_CENTS),
         pay_to: OKX_RECEIVING_ADDRESS,
         headers: ['PAYMENT-SIGNATURE', 'X-PAYMENT']
       } : undefined
@@ -1895,7 +1909,7 @@ function isBrowserWebRequest(req) {
 // The published payment offer. Amount follows usdtBaseUnits, so demo mode
 // (OKX_TEST_MODE=1) offers 0 and real mode offers the listed price.
 function x402Offer(baseUrl) {
-  const amount = usdtBaseUnits(WEB_PRICE_CENTS);
+  const amount = usdtBaseUnitsReal(WEB_PRICE_CENTS);
   return {
     scheme: 'exact',
     network: X402_NETWORK,
@@ -1962,7 +1976,7 @@ function verifyX402Payment(decoded) {
   }
   let value;
   try { value = BigInt(auth.value); } catch { return { ok: false, error: 'Payment value is not a valid integer amount.' }; }
-  const required = BigInt(usdtBaseUnits(WEB_PRICE_CENTS));
+  const required = BigInt(usdtBaseUnitsReal(WEB_PRICE_CENTS));
   if (value < required) {
     return { ok: false, error: `Payment amount ${value} is below the required ${required} base units.` };
   }
@@ -2302,7 +2316,21 @@ app.post('/api/validate', async (req, res) => {
   let liveError = '';
 
   try {
-    assets = await provisionPreferencesAssets(pitch, preview);
+    const provisionPromise = provisionPreferencesAssets(pitch, preview);
+    if (x402) {
+      // Paid agent (A2MCP) call: the report is the deliverable and must return
+      // promptly. Give provisioning a short window; if the simulation is still
+      // being set up, hand back a 'provisioning' status the agent can poll via
+      // GET /api/session/:id instead of blocking the whole request.
+      provisionPromise.catch(() => {}); // swallow a late rejection if we time out first
+      assets = await withTimeout(
+        provisionPromise,
+        Number(process.env.X402_PROVISION_TIMEOUT_MS || 9000),
+        { live: true, status: 'provisioning', simulation_status: 'provisioning', message: 'Population simulation is still provisioning — poll GET /api/session/{validation_id} for the survey and simulation results.' }
+      );
+    } else {
+      assets = await provisionPromise;
+    }
     liveStatus = assets.status || 'created';
   } catch (error) {
     console.error('⚠️ Web PreferencesAI provisioning failed:', error.message);
