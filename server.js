@@ -94,7 +94,13 @@ const CRYPTO_PAYMENTS_ENABLED = Boolean(OKX_RECEIVING_ADDRESS && /^0x[0-9a-f]{40
 // PAYMENT-SIGNATURE (v2) or X-PAYMENT (v1) header. Browser calls from the web
 // app keep the free preview + Stripe/OKX-wallet flow. Disable with X402_ENABLED=0.
 const X402_ENABLED = process.env.X402_ENABLED !== '0' && CRYPTO_PAYMENTS_ENABLED;
-const X402_NETWORK = (process.env.X402_NETWORK || `eip155:${OKX_CHAIN_ID}`).trim();
+// The x402 offer must match the chain the ASP is REGISTERED on (X Layer mainnet,
+// chainId 196) — the registered service and the USDT asset both live there.
+// This is deliberately decoupled from OKX_CHAIN_ID so the web app's gasless demo
+// can point at a testnet without making the agent-facing x402 offer inconsistent
+// with the on-chain registration. Override with X402_CHAIN_ID if you re-register.
+const X402_CHAIN_ID = Number(process.env.X402_CHAIN_ID || 196);
+const X402_NETWORK = (process.env.X402_NETWORK || `eip155:${X402_CHAIN_ID}`).trim();
 // EIP-712 domain the buyer signs with (the offer's `extra.name`/`extra.version`
 // drives the signer, so offer and verification stay symmetric by construction).
 const X402_DOMAIN_NAME = process.env.X402_DOMAIN_NAME || 'USDT';
@@ -1990,7 +1996,7 @@ function verifyX402Payment(decoded) {
   let recovered;
   try {
     recovered = verifyTypedData(
-      { name: X402_DOMAIN_NAME, version: X402_DOMAIN_VERSION, chainId: OKX_CHAIN_ID, verifyingContract: OKX_USDT_CONTRACT },
+      { name: X402_DOMAIN_NAME, version: X402_DOMAIN_VERSION, chainId: X402_CHAIN_ID, verifyingContract: OKX_USDT_CONTRACT },
       X402_TRANSFER_TYPES,
       { from: auth.from, to: auth.to, value, validAfter: BigInt(auth.validAfter ?? 0), validBefore: BigInt(auth.validBefore ?? 0), nonce: auth.nonce },
       signature
