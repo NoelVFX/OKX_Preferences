@@ -8,7 +8,7 @@ import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
-import { verifyMessage } from 'ethers';
+import { verifyMessage, verifyTypedData } from 'ethers';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -87,6 +87,18 @@ const OKX_REQUEST_TIMEOUT = Number(process.env.OKX_REQUEST_TIMEOUT || 20) * 1000
 const OKX_TEST_MODE = ['1', 'true', 'yes'].includes(String(process.env.OKX_TEST_MODE || '').toLowerCase());
 const CRYPTO_PAYMENT_KIND = OKX_TEST_MODE ? 'signature' : 'usdt';
 const CRYPTO_PAYMENTS_ENABLED = Boolean(OKX_RECEIVING_ADDRESS && /^0x[0-9a-f]{40}$/.test(OKX_RECEIVING_ADDRESS) && OKX_USDT_CONTRACT);
+
+// --- x402 payment gate (OKX Agent Payments Protocol) on POST /api/validate ---
+// Agent callers (no browser Origin/Sec-Fetch-* headers) get HTTP 402 with an
+// `accepts` offer; they replay with a signed EIP-3009 authorization in the
+// PAYMENT-SIGNATURE (v2) or X-PAYMENT (v1) header. Browser calls from the web
+// app keep the free preview + Stripe/OKX-wallet flow. Disable with X402_ENABLED=0.
+const X402_ENABLED = process.env.X402_ENABLED !== '0' && CRYPTO_PAYMENTS_ENABLED;
+const X402_NETWORK = (process.env.X402_NETWORK || `eip155:${OKX_CHAIN_ID}`).trim();
+// EIP-712 domain the buyer signs with (the offer's `extra.name`/`extra.version`
+// drives the signer, so offer and verification stay symmetric by construction).
+const X402_DOMAIN_NAME = process.env.X402_DOMAIN_NAME || 'USDT';
+const X402_DOMAIN_VERSION = process.env.X402_DOMAIN_VERSION || '1';
 
 // ERC-20 transfer(address,uint256) selector and Transfer(address,address,uint256) event topic.
 const ERC20_TRANSFER_SELECTOR = '0xa9059cbb';
@@ -1385,8 +1397,16 @@ function aspActions(baseUrl) {
     {
       id: 'validate_concept',
       name: 'Validate a product concept',
-      description: 'Submit a product/startup/workflow concept. Returns a market-validation preview: pitch category, two target demographic segments with preview affinity scores, product-market-fit findings, and the provisioned Preferences AI survey/simulation state plus a paid-unlock link.',
-      pricing: 'free_preview',
+      description: 'Submit a product/startup/workflow concept. Returns a market-validation report: pitch category, two target demographic segments with affinity scores, product-market-fit findings, and the provisioned Preferences AI survey/simulation state. Agent calls are x402-gated (HTTP 402 challenge, pay with a signed authorization); browser calls get a free preview with a paid-unlock link.',
+      pricing: X402_ENABLED ? `x402: ${centsToUsdtDisplay(WEB_PRICE_CENTS)} on ${OKX_CHAIN_NAME}` : 'free_preview',
+      payment: X402_ENABLED ? {
+        protocol: 'x402',
+        scheme: 'exact',
+        network: X402_NETWORK,
+        asset: OKX_USDT_CONTRACT,
+        amount_base_units: usdtBaseUnits(WEB_PRICE_CENTS),
+        pay_to: OKX_RECEIVING_ADDRESS
+      } : undefined,
       method: 'POST',
       path: '/api/validate',
       url: `${baseUrl}/api/validate`,
@@ -1455,7 +1475,7 @@ function buildAgentManifest(baseUrl) {
       logo_url: `${baseUrl}/Preferences_Logo.jpeg`,
       contact_email: ASP_CONTACT_EMAIL
     },
-    auth: { type: 'none', note: 'The free validate_concept tool is public. Paid actions are gated by Stripe/OKX Wallet payment, not an API key.' },
+    auth: { type: 'none', note: X402_ENABLED ? 'No API key. Agent calls to validate_concept are x402-gated (HTTP 402 → pay → replay); the web app keeps its free preview with Stripe/OKX Wallet paid unlock.' : 'The free validate_concept tool is public. Paid actions are gated by Stripe/OKX Wallet payment, not an API key.' },
     endpoints: {
       manifest: `${baseUrl}/api/agent/manifest`,
       openapi: `${baseUrl}/openapi.json`,
@@ -1464,9 +1484,18 @@ function buildAgentManifest(baseUrl) {
     },
     payments: {
       currency: WEB_PRICE_CURRENCY,
-      methods: [stripe ? 'stripe' : null, CRYPTO_PAYMENTS_ENABLED ? 'okx_wallet' : null].filter(Boolean),
+      methods: [stripe ? 'stripe' : null, CRYPTO_PAYMENTS_ENABLED ? 'okx_wallet' : null, X402_ENABLED ? 'x402' : null].filter(Boolean),
       unlock_price_cents: WEB_PRICE_CENTS,
-      pitch_deck_price_cents: WEB_PITCH_DECK_PRICE_CENTS
+      pitch_deck_price_cents: WEB_PITCH_DECK_PRICE_CENTS,
+      x402: X402_ENABLED ? {
+        endpoint: '/api/validate',
+        scheme: 'exact',
+        network: X402_NETWORK,
+        asset: OKX_USDT_CONTRACT,
+        amount_base_units: usdtBaseUnits(WEB_PRICE_CENTS),
+        pay_to: OKX_RECEIVING_ADDRESS,
+        headers: ['PAYMENT-SIGNATURE', 'X-PAYMENT']
+      } : undefined
     },
     okx: {
       onchain_os: true,
@@ -1514,7 +1543,10 @@ function buildOpenApiSpec(baseUrl) {
             required: true,
             content: { 'application/json': { schema: { type: 'object', required: ['pitch'], properties: { pitch: { type: 'string', minLength: 8, maxLength: 1000 } } } } }
           },
-          responses: { '200': { description: 'Validation preview', content: { 'application/json': { schema: { type: 'object' } } } } }
+          responses: {
+            '200': { description: 'Validation report (session unlocked when paid via x402)', content: { 'application/json': { schema: { type: 'object' } } } },
+            '402': { description: 'Payment required (x402): the PAYMENT-REQUIRED header (base64 JSON, v2) and the JSON body (v1) carry the accepts[] offer — 9.99 USDT `exact` scheme on X Layer. Replay with the signed authorization in the PAYMENT-SIGNATURE or X-PAYMENT header.', content: { 'application/json': { schema: { type: 'object' } } } }
+          }
         }
       },
       '/api/session/{validationId}': {
@@ -1848,6 +1880,116 @@ async function markCryptoTxUsed(txHash, claim) {
   writeJsonFile(USED_CRYPTO_TX_PATH, store);
 }
 
+// --- x402 (OKX Agent Payments Protocol) seller-side gate for /api/validate ---
+
+// True when the request comes from a browser page (the web app's own frontend):
+// browsers attach Sec-Fetch-* metadata and an Origin/Referer on fetch POSTs.
+// Agent/CLI callers send neither, so they hit the 402 payment gate instead.
+function isBrowserWebRequest(req) {
+  if (req.get('sec-fetch-site')) return true;
+  const source = req.get('origin') || req.get('referer') || '';
+  if (!source) return false;
+  try { return new URL(source).host === req.get('host'); } catch { return false; }
+}
+
+// The published payment offer. Amount follows usdtBaseUnits, so demo mode
+// (OKX_TEST_MODE=1) offers 0 and real mode offers the listed price.
+function x402Offer(baseUrl) {
+  const amount = usdtBaseUnits(WEB_PRICE_CENTS);
+  return {
+    scheme: 'exact',
+    network: X402_NETWORK,
+    amount, // x402 v2 field
+    maxAmountRequired: amount, // x402 v1 field
+    asset: OKX_USDT_CONTRACT,
+    payTo: OKX_RECEIVING_ADDRESS,
+    resource: `${baseUrl}/api/validate`,
+    description: `${ASP_NAME} — full market-validation report for one concept (paid unlock included)`,
+    mimeType: 'application/json',
+    maxTimeoutSeconds: 300,
+    extra: { name: X402_DOMAIN_NAME, version: X402_DOMAIN_VERSION, symbol: OKX_USDT_SYMBOL, decimals: OKX_USDT_DECIMALS }
+  };
+}
+
+// 402 challenge in both wire formats: x402 v2 PAYMENT-REQUIRED header
+// (base64 JSON) plus the v1 JSON body, so either client generation can pay.
+function sendX402Challenge(req, res, errorMessage) {
+  const offer = x402Offer(publicBaseUrl(req));
+  const message = errorMessage || 'Payment required: replay this request with a signed payment authorization.';
+  res.status(402)
+    .set('PAYMENT-REQUIRED', Buffer.from(JSON.stringify({ x402Version: 2, error: message, accepts: [offer] })).toString('base64'))
+    .json({ x402Version: 1, error: message, accepts: [offer] });
+}
+
+function parseX402PaymentHeader(req) {
+  const raw = req.get('payment-signature') || req.get('x-payment');
+  if (!raw) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(raw.trim(), 'base64').toString('utf8'));
+    return decoded && typeof decoded === 'object' ? decoded : { __invalid: true };
+  } catch {
+    return { __invalid: true };
+  }
+}
+
+const X402_TRANSFER_TYPES = {
+  TransferWithAuthorization: [
+    { name: 'from', type: 'address' },
+    { name: 'to', type: 'address' },
+    { name: 'value', type: 'uint256' },
+    { name: 'validAfter', type: 'uint256' },
+    { name: 'validBefore', type: 'uint256' },
+    { name: 'nonce', type: 'bytes32' }
+  ]
+};
+
+// Verifies a decoded `exact`-scheme payment against the published offer:
+// recipient, amount, validity window, and the EIP-3009 typed-data signature.
+// Replay protection (nonce) is enforced by the caller via the crypto-tx guard.
+function verifyX402Payment(decoded) {
+  const scheme = decoded.scheme;
+  if (scheme && scheme !== 'exact') {
+    return { ok: false, error: `Unsupported payment scheme "${scheme}" — this endpoint accepts the exact scheme.` };
+  }
+  const payload = decoded.payload || {};
+  const auth = payload.authorization || {};
+  const signature = payload.signature || '';
+  if (!signature || !auth.from || !auth.to || auth.value === undefined || !auth.nonce) {
+    return { ok: false, error: 'Malformed payment payload: expected payload.signature and payload.authorization {from,to,value,validAfter,validBefore,nonce}.' };
+  }
+  if (String(auth.to).toLowerCase() !== OKX_RECEIVING_ADDRESS) {
+    return { ok: false, error: 'Payment authorization is not addressed to this service.' };
+  }
+  let value;
+  try { value = BigInt(auth.value); } catch { return { ok: false, error: 'Payment value is not a valid integer amount.' }; }
+  const required = BigInt(usdtBaseUnits(WEB_PRICE_CENTS));
+  if (value < required) {
+    return { ok: false, error: `Payment amount ${value} is below the required ${required} base units.` };
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (auth.validAfter !== undefined && now < Number(auth.validAfter)) {
+    return { ok: false, error: 'Payment authorization is not yet valid.' };
+  }
+  if (auth.validBefore !== undefined && now >= Number(auth.validBefore)) {
+    return { ok: false, error: 'Payment authorization has expired — request a fresh 402 and sign again.' };
+  }
+  let recovered;
+  try {
+    recovered = verifyTypedData(
+      { name: X402_DOMAIN_NAME, version: X402_DOMAIN_VERSION, chainId: OKX_CHAIN_ID, verifyingContract: OKX_USDT_CONTRACT },
+      X402_TRANSFER_TYPES,
+      { from: auth.from, to: auth.to, value, validAfter: BigInt(auth.validAfter ?? 0), validBefore: BigInt(auth.validBefore ?? 0), nonce: auth.nonce },
+      signature
+    );
+  } catch {
+    return { ok: false, error: 'The payment signature could not be verified.' };
+  }
+  if (recovered.toLowerCase() !== String(auth.from).toLowerCase()) {
+    return { ok: false, error: 'The payment signature does not match the paying wallet.' };
+  }
+  return { ok: true, payer: recovered.toLowerCase(), nonce: String(auth.nonce).toLowerCase(), authorization: auth, signature };
+}
+
 // Normalizes the client payload for a crypto verification. A bare string is
 // treated as a transaction hash (back-compat / the /success recovery param).
 function cryptoPayload(payload) {
@@ -2134,6 +2276,22 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static(STATIC_DIR));
 
 app.post('/api/validate', async (req, res) => {
+  // x402 gate for agent callers. The web app's own frontend (browser requests)
+  // keeps the free preview + Stripe/OKX-wallet unlock flow.
+  let x402 = null;
+  if (X402_ENABLED && !isBrowserWebRequest(req)) {
+    const decoded = parseX402PaymentHeader(req);
+    if (!decoded) return sendX402Challenge(req, res);
+    if (decoded.__invalid) return sendX402Challenge(req, res, 'The payment header could not be decoded (expected base64-encoded JSON).');
+    const verdict = verifyX402Payment(decoded);
+    if (!verdict.ok) return sendX402Challenge(req, res, verdict.error);
+    const replayKey = `x402:${verdict.payer}:${verdict.nonce}`;
+    if (await isCryptoTxUsed(replayKey, { validation_id: '', purpose: 'x402_validate' })) {
+      return sendX402Challenge(req, res, 'This payment authorization was already used — sign a fresh one.');
+    }
+    x402 = { ...verdict, replayKey };
+  }
+
   const pitch = trimText(req.body?.pitch, 1000).trim();
   if (pitch.length < 8) return res.status(400).json({ error: 'Please enter a concept brief with at least 8 characters.' });
 
@@ -2170,6 +2328,31 @@ app.post('/api/validate', async (req, res) => {
     live_error: liveError,
     paid: false
   });
+
+  // x402-paid agent call: the payment is already verified, so consume the
+  // authorization, unlock the session, and skip the Stripe checkout entirely.
+  if (x402) {
+    await markCryptoTxUsed(x402.replayKey, { validation_id: validationId, purpose: 'x402_validate', payer: x402.payer });
+    const paidSession = await saveWebSession({
+      validation_id: validationId,
+      paid: true,
+      paid_at: new Date().toISOString(),
+      payment_method: 'x402',
+      x402_payer: x402.payer,
+      // The signed EIP-3009 authorization IS the settlement instrument — kept
+      // so it can be settled on-chain within its validity window once a
+      // settler/facilitator is wired up. In demo mode the amount is 0.
+      x402_proof: { authorization: x402.authorization, signature: x402.signature }
+    });
+    res.set('PAYMENT-RESPONSE', Buffer.from(JSON.stringify({
+      success: true,
+      status: OKX_TEST_MODE ? 'verified-demo' : 'authorization-verified',
+      settlement: OKX_TEST_MODE ? 'demo mode: signature verified, nothing charged' : 'deferred: signed authorization stored for settlement',
+      network: X402_NETWORK,
+      payer: x402.payer
+    })).toString('base64'));
+    return res.json(publicWebSession(paidSession));
+  }
 
   try {
     const checkoutSession = await createCheckoutSession(validationSession, req);
