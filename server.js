@@ -10,6 +10,14 @@ import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { verifyMessage, verifyTypedData } from 'ethers';
 
+// Vercel: Disable automatic body parsing so express.raw() gets the raw body for Stripe webhook verification
+// This must be exported before any code that creates the Express app
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '.env'), override: true });
