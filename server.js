@@ -2289,6 +2289,11 @@ app.use(express.urlencoded({ extended: false }));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(STATIC_DIR));
 
+// Serve index.html for root path
+app.get('/', (req, res) => {
+  res.sendFile(path.join(STATIC_DIR, 'index.html'));
+});
+
 app.post('/api/validate', async (req, res) => {
   // x402 gate for agent callers. The web app's own frontend (browser requests)
   // keeps the free preview + Stripe/OKX-wallet unlock flow.
