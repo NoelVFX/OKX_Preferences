@@ -9,6 +9,9 @@ import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { verifyMessage, verifyTypedData } from 'ethers';
+import { paymentMiddleware, x402ResourceServer } from '@okxweb3/x402-express';
+import { ExactEvmScheme } from '@okxweb3/x402-evm/exact/server';
+import { OKXFacilitatorClient } from '@okxweb3/x402-core';
 
 // Vercel: Disable automatic body parsing so express.raw() gets the raw body for Stripe webhook verification
 // This must be exported before any code that creates the Express app
@@ -107,6 +110,78 @@ const X402_NETWORK = (process.env.X402_NETWORK || `eip155:${OKX_CHAIN_ID}`).trim
 // drives the signer, so offer and verification stay symmetric by construction).
 const X402_DOMAIN_NAME = process.env.X402_DOMAIN_NAME || 'USDT';
 const X402_DOMAIN_VERSION = process.env.X402_DOMAIN_VERSION || '1';
+
+// --- Official OKX Payment SDK (@okxweb3/x402-*) — required for the OKX ASP listing ---
+// The SDK's facilitator client fetches supported schemes/assets and verifies +
+// settles payments through OKX, so it REQUIRES OKX Developer Portal API
+// credentials (https://web3.okx.com/onchain-os/dev-portal). When they are set,
+// the official SDK gates POST /api/validate for agent callers (this is what OKX
+// review validates). When absent, the endpoint falls back to the built-in x402
+// gate so the app still runs before the credentials are provisioned. The price
+// is a fiat string; the facilitator maps it to the canonical stablecoin (USDT0)
+// on X402_NETWORK, which is why no token address is hand-picked here.
+const OKX_API_KEY = process.env.OKX_API_KEY || '';
+const OKX_SECRET_KEY = process.env.OKX_SECRET_KEY || '';
+const OKX_PASSPHRASE = process.env.OKX_PASSPHRASE || '';
+const OKX_FACILITATOR_BASE_URL = process.env.OKX_BASE_URL || '';
+const OKX_SDK_ENABLED = X402_ENABLED && Boolean(OKX_API_KEY && OKX_SECRET_KEY && OKX_PASSPHRASE);
+const X402_PRICE_USD = `$${((Number(WEB_PRICE_CENTS) || 0) / 100).toFixed(2)}`;
+
+let okxPaymentMiddleware = null;
+let okxResourceServer = null;
+let okxSdkInitPromise = null;
+if (OKX_SDK_ENABLED) {
+  try {
+    const facilitator = new OKXFacilitatorClient({
+      apiKey: OKX_API_KEY,
+      secretKey: OKX_SECRET_KEY,
+      passphrase: OKX_PASSPHRASE,
+      ...(OKX_FACILITATOR_BASE_URL ? { baseUrl: OKX_FACILITATOR_BASE_URL } : {})
+    });
+    okxResourceServer = new x402ResourceServer(facilitator);
+    okxResourceServer.register(X402_NETWORK, new ExactEvmScheme());
+    okxPaymentMiddleware = paymentMiddleware(
+      {
+        'POST /api/validate': {
+          accepts: [{ scheme: 'exact', network: X402_NETWORK, payTo: OKX_RECEIVING_ADDRESS, price: X402_PRICE_USD }],
+          description: `${ASP_NAME} — full market-validation report for one concept`,
+          mimeType: 'application/json'
+        }
+      },
+      okxResourceServer,
+      undefined, // paywallConfig
+      undefined, // paywall
+      false      // syncFacilitatorOnStart=false — initialize lazily (serverless-friendly)
+    );
+    console.log(`✅ OKX Payment SDK enabled: exact ${X402_PRICE_USD} on ${X402_NETWORK} → ${OKX_RECEIVING_ADDRESS}`);
+  } catch (err) {
+    okxPaymentMiddleware = null;
+    console.error('⚠️ OKX Payment SDK init failed; falling back to built-in x402 gate:', err.message);
+  }
+}
+
+// Initialize the resource server once per instance (fetches facilitator support).
+// Lazy + cached so a serverless cold start doesn't block boot on a network call.
+async function ensureOkxSdkInit() {
+  if (!okxSdkInitPromise) okxSdkInitPromise = okxResourceServer.initialize();
+  return okxSdkInitPromise;
+}
+
+// Route gate: browsers skip payment (free preview); agents are gated by the
+// official OKX SDK. next() runs only after a verified+settled payment.
+async function okxSdkGate(req, res, next) {
+  if (!okxPaymentMiddleware || isBrowserWebRequest(req)) return next();
+  try {
+    await ensureOkxSdkInit();
+  } catch (err) {
+    return res.status(503).json({ error: 'Payment facilitator is temporarily unavailable.', detail: String(err?.message || err) });
+  }
+  return okxPaymentMiddleware(req, res, (err) => {
+    if (err) return next(err);
+    req.okxSdkPaid = true;
+    next();
+  });
+}
 
 // ERC-20 transfer(address,uint256) selector and Transfer(address,address,uint256) event topic.
 const ERC20_TRANSFER_SELECTOR = '0xa9059cbb';
@@ -2302,11 +2377,17 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(STATIC_DIR, 'index.html'));
 });
 
-app.post('/api/validate', async (req, res) => {
-  // x402 gate for agent callers. The web app's own frontend (browser requests)
-  // keeps the free preview + Stripe/OKX-wallet unlock flow.
+app.post('/api/validate', okxSdkGate, async (req, res) => {
+  // Payment gate. Browser requests (the web app's own frontend) keep the free
+  // preview + Stripe/OKX-wallet unlock flow. Agent callers pay via the official
+  // OKX SDK (okxSdkGate, above) when credentials are configured; otherwise they
+  // fall through to the built-in x402 gate below.
   let x402 = null;
-  if (X402_ENABLED && !isBrowserWebRequest(req)) {
+  if (req.okxSdkPaid) {
+    // The official OKX SDK already verified + settled the payment and set its own
+    // PAYMENT-RESPONSE header; just mark the session paid.
+    x402 = { method: 'okx-sdk' };
+  } else if (X402_ENABLED && !OKX_SDK_ENABLED && !isBrowserWebRequest(req)) {
     const decoded = parseX402PaymentHeader(req);
     if (!decoded) return sendX402Challenge(req, res);
     if (decoded.__invalid) return sendX402Challenge(req, res, 'The payment header could not be decoded (expected base64-encoded JSON).');
@@ -2316,7 +2397,7 @@ app.post('/api/validate', async (req, res) => {
     if (await isCryptoTxUsed(replayKey, { validation_id: '', purpose: 'x402_validate' })) {
       return sendX402Challenge(req, res, 'This payment authorization was already used — sign a fresh one.');
     }
-    x402 = { ...verdict, replayKey };
+    x402 = { ...verdict, replayKey, method: 'handrolled' };
   }
 
   const pitch = trimText(req.body?.pitch, 1000).trim();
@@ -2370,19 +2451,27 @@ app.post('/api/validate', async (req, res) => {
     paid: false
   });
 
-  // x402-paid agent call: the payment is already verified, so consume the
-  // authorization, unlock the session, and skip the Stripe checkout entirely.
+  // Paid agent call: the payment is already verified, so unlock the session and
+  // skip the Stripe checkout entirely.
   if (x402) {
-    await markCryptoTxUsed(x402.replayKey, { validation_id: validationId, purpose: 'x402_validate', payer: x402.payer });
-    const paidSession = await saveWebSession({
+    const paidFields = {
       validation_id: validationId,
       paid: true,
       paid_at: new Date().toISOString(),
-      payment_method: 'x402',
+      payment_method: x402.method === 'okx-sdk' ? 'x402-okx-sdk' : 'x402'
+    };
+    if (x402.method === 'okx-sdk') {
+      // The official OKX SDK verified + settled via the facilitator and already
+      // set the PAYMENT-RESPONSE header — nothing more to record or emit here.
+      const paidSession = await saveWebSession(paidFields);
+      return res.json(publicWebSession(paidSession));
+    }
+    // Built-in fallback path: consume the nonce and keep the signed EIP-3009
+    // authorization as the deferred settlement instrument. In demo mode amount=0.
+    await markCryptoTxUsed(x402.replayKey, { validation_id: validationId, purpose: 'x402_validate', payer: x402.payer });
+    const paidSession = await saveWebSession({
+      ...paidFields,
       x402_payer: x402.payer,
-      // The signed EIP-3009 authorization IS the settlement instrument — kept
-      // so it can be settled on-chain within its validity window once a
-      // settler/facilitator is wired up. In demo mode the amount is 0.
       x402_proof: { authorization: x402.authorization, signature: x402.signature }
     });
     res.set('PAYMENT-RESPONSE', Buffer.from(JSON.stringify({
