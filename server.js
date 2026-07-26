@@ -41,6 +41,12 @@ function isVercelRuntime() {
 }
 
 const app = express();
+// Behind Vercel/Railway (TLS terminated at the edge), honor X-Forwarded-Proto so
+// req.protocol is 'https'. The OKX Payment SDK builds the x402 challenge's
+// resource.url from `${req.protocol}://${host}${path}`; without this it would
+// advertise an insecure http:// URL that mismatches the registered https
+// endpoint and fails x402 standard validation.
+app.set('trust proxy', true);
 const port = Number(process.env.PORT || 4242);
 const localDefaultDomain = `http://localhost:${port}`;
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
