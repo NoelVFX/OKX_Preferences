@@ -2410,7 +2410,18 @@ app.post('/api/validate', okxSdkGate, async (req, res) => {
   if (pitch.length < 8) return res.status(400).json({ error: 'Please enter a concept brief with at least 8 characters.' });
 
   const validationId = crypto.randomUUID();
-  const preview = await buildHermesPreviewReport(pitch);
+  // Paid agent (A2MCP) calls must respond fast — the OKX SDK settles the payment
+  // AFTER the handler, so a slow report compounds with settlement into a task
+  // timeout. Bound the Hermes preview for the agent path and fall back to the
+  // deterministic local report; browser calls keep the full (possibly slower)
+  // generation since the web UI shows a loading state.
+  const preview = x402
+    ? await withTimeout(
+        buildHermesPreviewReport(pitch),
+        Number(process.env.X402_PREVIEW_TIMEOUT_MS || 12000),
+        { ...buildPreviewReport(pitch), preview_source: 'local_fallback', preview_error: 'agent fast-path timeout' }
+      )
+    : await buildHermesPreviewReport(pitch);
   let assets;
   let liveStatus = 'pending';
   let liveError = '';
