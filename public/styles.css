@@ -198,6 +198,28 @@ button:active:not(:disabled), .button-link:not(.disabled):active { transform: tr
 button:disabled { cursor: wait; opacity: 0.72; }
 .button-link.disabled { pointer-events: none; opacity: 0.5; filter: grayscale(1); }
 
+/* Connect the user's own Preferences AI account */
+.connect-account.hidden { display: none !important; }
+.connect-account { margin-top: 14px; }
+.connect-account label { display: block; margin: 8px 0 6px; }
+.connect-account #pai-key {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.35));
+  background: rgba(8, 17, 31, 0.55);
+  color: var(--text, #edf4ff);
+  font: inherit;
+  letter-spacing: 0.04em;
+}
+.connect-account #pai-key:focus {
+  outline: none;
+  border-color: var(--accent-strong, #38bdf8);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.18);
+}
+
 /* OKX Wallet crypto payment */
 .crypto-pay.hidden { display: none !important; }
 .pay-divider {
