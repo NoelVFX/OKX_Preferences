@@ -2198,11 +2198,25 @@ function renderSuccessPage({ session, unlocked, error, pitchDeckUnlocked, pitchD
   const surveyBlock = surveyUrl
     ? `<a class="big-link" href="${escapeAttr(surveyUrl)}" target="_blank" rel="noreferrer">Open Preferences AI Survey</a>`
     : `<p id="survey-pending" class="fine-print" data-validation-id="${validationIdAttr}">Your Preferences AI survey is still being provisioned. <a href="#" id="survey-refresh" class="back-link">Refresh / retry</a></p>`;
+  // Once paid, the user connects THEIR own Preferences AI account and we build
+  // the survey + simulation on THEIR dashboard. Show the connect form until that
+  // has happened; then show the dashboard links.
+  const connected = session?.preferences_account === 'user' || Boolean(surveyUrl);
+  const connectBlock = `
+      <div class="connect-account" id="connect-account">
+        <h3>Generate on your Preferences AI dashboard</h3>
+        <p>Connect your own Preferences AI account and we'll build the survey and run the digital-population simulation on <strong>your</strong> dashboard — not ours.</p>
+        <label for="pai-key" class="fine-print">Preferences AI API key (Dashboard → API Management)</label>
+        <input id="pai-key" type="password" autocomplete="off" spellcheck="false" placeholder="pak_..." />
+        <button id="provision-btn" class="button-link" type="button" data-validation-id="${validationIdAttr}">Generate on my Preferences AI dashboard</button>
+        <p id="provision-note" class="fine-print"></p>
+      </div>`;
   const links = unlocked ? `
     <div class="unlock-card success">
-      <h2>Unlocked Preferences ASP dashboard links</h2>
-      ${surveyBlock}
-      ${simulationUrl ? `<a class="big-link" href="${escapeAttr(simulationUrl)}" target="_blank" rel="noreferrer">Open Simulation Logs</a>` : '<p>No live simulation URL is available for this run yet.</p>'}
+      <h2>${connected ? 'Your Preferences AI dashboard links' : 'Unlocked — connect your Preferences AI account'}</h2>
+      ${connected
+        ? `${surveyBlock}${simulationUrl ? `<a class="big-link" href="${escapeAttr(simulationUrl)}" target="_blank" rel="noreferrer">Open Simulation Logs</a>` : '<p class="fine-print">The simulation is running — refresh in a minute for the logs link.</p>'}`
+        : connectBlock}
     </div>` : `
     <div class="unlock-card warning">
       <h2>Unlock not verified</h2>
@@ -2262,7 +2276,7 @@ function renderSuccessPage({ session, unlocked, error, pitchDeckUnlocked, pitchD
     }
   }
 
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Preferences ASP Unlock</title><link rel="stylesheet" href="/styles.css"></head><body><main class="shell narrow"><a href="/" class="back-link">← Run another validation</a><section class="hero-card">${links}${pitchDeckSection}<div class="result-card"><p class="eyebrow">Concept</p><h1>${escapeHtml(session?.pitch || 'Preferences ASP validation')}</h1><ul>${previewItems}</ul></div></section></main><div id="toast-stack" class="toast-stack"></div><script src="/pitch-deck-status.js?v=1" type="module"></script></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Preferences ASP Unlock</title><link rel="stylesheet" href="/styles.css"></head><body><main class="shell narrow"><a href="/" class="back-link">← Run another validation</a><section class="hero-card">${links}${pitchDeckSection}<div class="result-card"><p class="eyebrow">Concept</p><h1>${escapeHtml(session?.pitch || 'Preferences ASP validation')}</h1><ul>${previewItems}</ul></div></section></main><div id="toast-stack" class="toast-stack"></div><script src="/pitch-deck-status.js?v=1" type="module"></script><script>(function(){var btn=document.getElementById('provision-btn');if(!btn)return;var input=document.getElementById('pai-key');var note=document.getElementById('provision-note');btn.addEventListener('click',async function(){var vid=btn.getAttribute('data-validation-id');var key=((input&&input.value)||'').trim();if(!/^pak_/.test(key)){note.textContent='Enter your Preferences AI API key — it starts with "pak_".';return;}btn.disabled=true;note.textContent='Generating your survey and running the simulation on your dashboard… this can take 1-3 minutes.';try{var r=await fetch('/api/session/'+encodeURIComponent(vid)+'/provision',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferences_api_key:key})});var d=await r.json();if(!r.ok)throw new Error(d.error||('HTTP '+r.status));if(input)input.value='';note.textContent='Done — reloading your dashboard links…';location.reload();}catch(e){note.textContent=e.message;btn.disabled=false;}});})();</script></body></html>`;
 }
 
 function escapeHtml(value) {
