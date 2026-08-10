@@ -981,7 +981,7 @@ async function buildHermesPitchDeckReport(session, { runHermes = defaultHermesRu
 
 // Simulation statuses that mean "still actively working toward completion", so
 // the pitch deck should keep waiting. Everything else that is not "completed"
-// (no simulation launched at all, insufficient PRU balance, failed, skipped,
+// (no simulation launched at all, insufficient PAI balance, failed, skipped,
 // etc.) will never reach completion, so we must NOT wait forever — we build the
 // local-fallback deck immediately instead.
 const SIMULATION_IN_PROGRESS_STATES = new Set([
@@ -1037,7 +1037,7 @@ async function checkPitchDeckReadiness(session, { fetchInsights = fetchSimulatio
 
   // Completed with usable results → build the data-rich deck from real
   // simulation numbers. Any other terminal state (no simulation launched,
-  // insufficient PRU, failed, skipped) → build the local-fallback deck now so
+  // insufficient PAI, failed, skipped) → build the local-fallback deck now so
   // the customer is never stuck loading.
   let completedInsights = null;
   if (simulationStatus === 'completed') {
@@ -1200,9 +1200,13 @@ function extractSimulationId(responseJson) {
   return String(responseJson?.simulation_id || responseJson?.id || data.simulation_id || data.id || '');
 }
 
-async function preferencesRequest(method, endpoint, { body, attempts = 3 } = {}) {
+async function preferencesRequest(method, endpoint, { body, attempts = 3, apiKey } = {}) {
+  // Per-call API key wins over the global owner key. Team isolation is implied
+  // by the key, so a user's own pak_ key routes every survey/simulation to
+  // THEIR Preferences AI dashboard instead of the owner's.
+  const key = apiKey || PREFERENCES_API_KEY;
   const headers = {
-    'X-API-Key': PREFERENCES_API_KEY,
+    'X-API-Key': key,
     'Content-Type': 'application/json',
     'Accept': 'application/json',
     'User-Agent': 'Preferences-ASP-Concierge/1.0'
@@ -1306,31 +1310,29 @@ async function createSurveyWithFallback(request, pitch, preview, primarySections
 
 function buildSimulationPayload({ surveyId, pitch, preview, estimate }) {
   const respondents = Number(estimate?.respondents || estimate?.sample_size || process.env.PREFERENCES_SIMULATION_RESPONDENTS || 100);
-  const pruCost = Number(estimate?.pru_cost || process.env.PREFERENCES_SIMULATION_PRU_COST || Math.ceil(respondents / 10));
   const populationQuery = [
     `Target Demographic A: ${preview.demographic_a}.`,
     `Target Demographic B: ${preview.demographic_b}.`,
     `All respondents should be plausible target customers for this Agent Service Provider / product concept: ${pitch}`
   ].join(' ');
+  // No client price on run requests — the server applies the catalog pai_cost.
   return {
     survey_id: surveyId,
     population_query: populationQuery,
     label: `${pitch.slice(0, 50)} Digital Population Pilot`,
     desired_respondent_count: respondents,
-    respondent_count: respondents,
-    num_respondents: respondents,
-    sample_size: respondents,
-    n: respondents,
-    pru_cost: pruCost,
     confidence_level: 0.95,
     margin_of_error: 0.05
   };
 }
 
-async function provisionPreferencesAssets(pitch, preview, { request = preferencesRequest } = {}) {
-  if (!PREFERENCES_API_KEY) {
-    return { live: false, status: 'skipped', message: 'PREFERENCES_AI_API_KEY is not set.' };
+async function provisionPreferencesAssets(pitch, preview, { request = preferencesRequest, apiKey } = {}) {
+  const key = apiKey || PREFERENCES_API_KEY;
+  if (!key) {
+    return { live: false, status: 'skipped', message: 'No Preferences AI API key available (connect your account to run on your dashboard).' };
   }
+  // Bind the chosen key onto every Preferences AI call for this provisioning.
+  const call = (method, endpoint, opts = {}) => request(method, endpoint, { ...opts, apiKey: key });
 
   const surveyPrompt = [
     `ASP product-market-fit survey for this real-world service concept: ${pitch}.`,
@@ -1339,7 +1341,7 @@ async function provisionPreferencesAssets(pitch, preview, { request = preference
     'Cover target audience, purchase intent, willingness to pay, pain points, alternatives, objections, messaging, and purchase channels.'
   ].join(' ');
 
-  const buildJson = await request('POST', '/surveys/build', {
+  const buildJson = await call('POST', '/surveys/build', {
     body: {
       survey_prompt: surveyPrompt,
       survey_type: 'product_market_fit',
@@ -1350,14 +1352,14 @@ async function provisionPreferencesAssets(pitch, preview, { request = preference
   const surveyContent = buildJson?.data?.survey_content;
   if (!surveyContent) throw new Error('Survey build response did not include data.survey_content');
 
-  const createJson = await createSurveyWithFallback(request, pitch, preview, surveyContent);
+  const createJson = await createSurveyWithFallback(call, pitch, preview, surveyContent);
   const surveyId = extractSurveyId(createJson);
 
   let verified = false;
   let verificationError = '';
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      await request('GET', `/surveys/${surveyId}`);
+      await call('GET', `/surveys/${surveyId}`);
       verified = true;
       break;
     } catch (error) {
@@ -1370,9 +1372,10 @@ async function provisionPreferencesAssets(pitch, preview, { request = preference
   let simulationStatus = verified ? 'not_started' : 'survey_verification_failed';
   let simulationMessage = verified ? '' : `Survey ${surveyId} was created but could not be verified before simulation launch: ${verificationError || 'unknown verification error'}`;
   let estimate = {};
-  let pruCost = 0;
+  let paiCost = 0;
   let respondents = 0;
-  let pruBalance = 0;
+  let paiBalance = 0;
+  let freeRunsRemaining = 0;
 
   if (!verified) {
     // Keep the created survey visible to the browser instead of throwing away
@@ -1382,22 +1385,27 @@ async function provisionPreferencesAssets(pitch, preview, { request = preference
     simulationMessage = 'WEB_RUN_LIVE_SIMULATION=0, so the survey was created but simulation launch was skipped.';
   } else {
     try {
-      const balanceJson = await request('GET', '/balance');
-      pruBalance = Number(balanceJson?.data?.pru_balance ?? balanceJson?.pru_balance ?? 0);
+      // Preferences AI bills in PAI Credits (two-decimal strings). Always check
+      // GET /balance before spending; estimates never charge.
+      const balanceJson = await call('GET', '/balance');
+      const balanceData = balanceJson?.data || balanceJson || {};
+      paiBalance = Number(balanceData.pai_balance ?? 0);
+      freeRunsRemaining = Number(balanceData.free_runs_remaining ?? 0);
 
       const populationQuery = `Target Demographic A: ${preview.demographic_a}. Target Demographic B: ${preview.demographic_b}. Plausible target customers for: ${pitch}`;
-      const estimateJson = await request('POST', '/simulations/estimate-cost', {
-        body: { population_query: populationQuery, confidence_level: 0.95, margin_of_error: 0.05 }
+      const estimateJson = await call('POST', '/simulations/estimate-cost', {
+        body: { survey_id: surveyId, population_query: populationQuery, confidence_level: 0.95, margin_of_error: 0.05 }
       });
       estimate = estimateJson?.data || estimateJson || {};
-      pruCost = Number(estimate.pru_cost || 0);
+      paiCost = Number(estimate.pai_cost ?? 0);
       respondents = Number(estimate.respondents || 0);
 
-      if (pruCost > 0 && pruBalance < pruCost) {
+      if (paiCost > 0 && freeRunsRemaining < 1 && paiBalance < paiCost) {
         simulationStatus = 'insufficient_balance';
-        simulationMessage = `PRU balance ${pruBalance} is below estimated cost ${pruCost}; simulation was not launched.`;
+        simulationMessage = `PAI balance ${paiBalance.toFixed(2)} is below the estimated cost ${paiCost.toFixed(2)} (and no free runs remain); simulation was not launched.`;
       } else {
-        const simJson = await request('POST', '/simulations', {
+        // Do NOT send a client price — the server applies the catalog pai_cost.
+        const simJson = await call('POST', '/simulations', {
           body: buildSimulationPayload({ surveyId, pitch, preview, estimate })
         });
         simulationId = extractSimulationId(simJson);
@@ -1417,7 +1425,7 @@ async function provisionPreferencesAssets(pitch, preview, { request = preference
     simulation_id: simulationId,
     survey_url: `https://dashboard.preferencesai.io/surveys/${surveyId}`,
     simulation_url: simulationId ? `https://dashboard.preferencesai.io/simulations/${simulationId}` : '',
-    estimate: { pru_cost: pruCost, respondents, pru_balance: pruBalance, tier_used: estimate.tier_used, notes: estimate.notes },
+    estimate: { pai_cost: paiCost, respondents, pai_balance: paiBalance, free_runs_remaining: freeRunsRemaining, catalog_sku: estimate.catalog_sku, notes: estimate.notes },
     simulation_status: simulationStatus,
     simulation_message: simulationMessage
   };
@@ -1689,6 +1697,8 @@ function publicWebSession(session) {
     pitch_category: session.pitch_category,
     survey_id: session.survey_id || '',
     simulation_id: session.simulation_id || '',
+    survey_url: session.survey_url || (session.survey_id ? `https://dashboard.preferencesai.io/surveys/${session.survey_id}` : ''),
+    simulation_url: session.simulation_url || (session.simulation_id ? `https://dashboard.preferencesai.io/simulations/${session.simulation_id}` : ''),
     estimate: session.estimate || null,
     simulation_status: session.simulation_status || 'unknown',
     simulation_message: session.simulation_message || '',
@@ -1696,6 +1706,10 @@ function publicWebSession(session) {
     checkout_error: session.checkout_error || '',
     live_status: session.live_status || 'unknown',
     live_error: session.live_error || '',
+    // 'user' once the survey/simulation were generated on the end-user's own
+    // Preferences AI account. The API key itself is NEVER exposed here.
+    preferences_account: session.preferences_account || '',
+    preferences_account_connected: Boolean(session.preferences_api_key),
     paid: Boolean(session.paid)
   };
 }
@@ -1710,7 +1724,8 @@ async function retryPreferencesProvisioning(validationId) {
   if (existing.live_status === 'created' && existing.survey_id) return existing;
   if (!existing.pitch || !existing.preview) throw new Error('Validation session is missing the pitch or preview needed to retry provisioning.');
 
-  const assets = await provisionPreferencesAssets(existing.pitch, existing.preview);
+  // Reuse the user's connected key so a retry stays on THEIR dashboard.
+  const assets = await provisionPreferencesAssets(existing.pitch, existing.preview, { apiKey: existing.preferences_api_key || undefined });
   const updatedSession = await saveWebSession({
     validation_id: validationId,
     survey_id: assets.survey_id || '',
@@ -2427,12 +2442,12 @@ app.post('/api/validate', okxSdkGate, async (req, res) => {
   let liveError = '';
 
   try {
-    const provisionPromise = provisionPreferencesAssets(pitch, preview);
     if (x402) {
       // Paid agent (A2MCP) call: the report is the deliverable and must return
       // promptly. Give provisioning a short window; if the simulation is still
       // being set up, hand back a 'provisioning' status the agent can poll via
       // GET /api/session/:id instead of blocking the whole request.
+      const provisionPromise = provisionPreferencesAssets(pitch, preview);
       provisionPromise.catch(() => {}); // swallow a late rejection if we time out first
       assets = await withTimeout(
         provisionPromise,
@@ -2440,7 +2455,16 @@ app.post('/api/validate', okxSdkGate, async (req, res) => {
         { live: true, status: 'provisioning', simulation_status: 'provisioning', message: 'Population simulation is still provisioning — poll GET /api/session/{validation_id} for the survey and simulation results.' }
       );
     } else {
-      assets = await provisionPromise;
+      // Web (browser) path: do NOT provision on the owner key here. The survey +
+      // simulation are generated AFTER payment, on the USER's own Preferences AI
+      // account, via POST /api/session/:id/provision. Nothing hits any dashboard
+      // pre-payment.
+      assets = {
+        live: false,
+        status: 'awaiting_account',
+        simulation_status: 'awaiting_account',
+        message: 'Unlock, then connect your Preferences AI account to generate the survey and simulation on your own dashboard.'
+      };
     }
     liveStatus = assets.status || 'created';
   } catch (error) {
@@ -2511,6 +2535,48 @@ app.post('/api/validate', okxSdkGate, async (req, res) => {
   }
 
   res.json({ ...publicWebSession({ ...validationSession, checkout_url: validationSession.checkout_url }), checkout_error: validationSession.checkout_error || '', live_error: WEB_REQUIRE_PAYMENT_FOR_DASHBOARD_LINKS ? undefined : liveError });
+});
+
+// Connect the user's OWN Preferences AI account (post-payment) and generate the
+// survey + simulation on THEIR dashboard. Requires a paid session. The pak_ key
+// is stored session-scoped (KV) as a secret and never returned to the browser.
+app.post('/api/session/:validationId/provision', async (req, res) => {
+  const validationId = String(req.params.validationId || '');
+  const session = await getWebSession(validationId);
+  if (!session) return res.status(404).json({ error: 'Validation session not found.' });
+  if (WEB_REQUIRE_PAYMENT_FOR_DASHBOARD_LINKS && !session.paid) {
+    return res.status(402).json({ error: 'Unlock the validation with payment before connecting your Preferences AI account.' });
+  }
+  const userKey = String(req.body?.preferences_api_key || '').trim();
+  if (!/^pak_[A-Za-z0-9._-]{8,}$/.test(userKey)) {
+    return res.status(400).json({ error: 'Enter your Preferences AI API key — it starts with "pak_" (Dashboard → API Management).' });
+  }
+  if (!session.pitch || !session.preview) {
+    return res.status(400).json({ error: 'This session is missing the concept or preview needed to provision.' });
+  }
+  // Persist the key first (session-scoped secret) so status polling / retry reuse it.
+  await saveWebSession({ validation_id: validationId, preferences_api_key: userKey, preferences_account: 'user' });
+  try {
+    const assets = await provisionPreferencesAssets(session.pitch, session.preview, { apiKey: userKey });
+    const updated = await saveWebSession({
+      validation_id: validationId,
+      survey_id: assets.survey_id || '',
+      simulation_id: assets.simulation_id || '',
+      survey_url: assets.survey_url || '',
+      simulation_url: assets.simulation_url || '',
+      estimate: assets.estimate || null,
+      simulation_status: assets.simulation_status || 'not_available',
+      simulation_message: assets.simulation_message || assets.message || '',
+      live_status: assets.status || 'created',
+      live_error: ''
+    });
+    res.json(publicWebSession(updated));
+  } catch (error) {
+    const status = error.status || 500;
+    await saveWebSession({ validation_id: validationId, live_status: 'failed', live_error: error.message, simulation_message: error.message });
+    console.error('⚠️ User-account Preferences provisioning failed:', error.message);
+    res.status(status).json({ error: `Provisioning on your Preferences AI account failed: ${error.message}` });
+  }
 });
 
 app.post('/api/session/:validationId/retry', async (req, res) => {

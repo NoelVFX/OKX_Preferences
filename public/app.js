@@ -186,6 +186,23 @@ function text(id, value) {
   document.querySelector(id).textContent = value || '—';
 }
 
+// Render a dd as a clickable dashboard link when a URL exists, else plain text.
+function dashboardLink(id, url, id_value, linkLabel, fallback) {
+  const el = document.querySelector(id);
+  if (!el) return;
+  el.replaceChildren();
+  if (url) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = linkLabel;
+    el.appendChild(a);
+  } else {
+    el.textContent = id_value || fallback || '—';
+  }
+}
+
 /* ---------- Animated count-up for affinity percentages ---------- */
 function animateAffinity(valueId, fillId, rawValue) {
   const match = String(rawValue || '').match(/[\d.]+/);
@@ -290,11 +307,12 @@ function render(data) {
   animateAffinity('#affinity-a', '#affinity-a-fill', preview.affinity_a);
   animateAffinity('#affinity-b', '#affinity-b-fill', preview.affinity_b);
   text('#validation-id-text', data.validation_id);
-  text('#survey-id', data.survey_id || 'Created after live API provisioning');
-  text('#simulation-id', data.simulation_id || data.simulation_status || 'Pending / not launched');
+  dashboardLink('#survey-id', data.survey_url, data.survey_id, 'Open survey on your dashboard →', 'Generated on your dashboard after you connect your account');
+  dashboardLink('#simulation-id', data.simulation_url, data.simulation_id, 'Open simulation on your dashboard →', data.simulation_status || 'Generated after you connect your account');
 
   const estimate = data.estimate;
-  text('#estimate', estimate ? `${estimate.respondents || '—'} respondents / ${estimate.pru_cost || '—'} PRU` : 'Not available');
+  const paiCost = estimate && estimate.pai_cost != null ? Number(estimate.pai_cost).toFixed(2) : '—';
+  text('#estimate', estimate ? `${estimate.respondents || '—'} respondents / ${paiCost} PAI` : 'Not available');
 
   const summaryList = document.querySelector('#summary-list');
   summaryList.replaceChildren();
@@ -335,6 +353,15 @@ function render(data) {
   retryButton.classList.toggle('hidden', data.live_status !== 'failed' || !currentValidationId);
   retryButton.disabled = false;
   setButtonBusy(retryState, false);
+
+  // Post-payment: reveal the "connect your Preferences AI account" panel until
+  // the survey/simulation have been generated on the user's own dashboard.
+  const connectAccount = document.querySelector('#connect-account');
+  if (connectAccount) {
+    const alreadyProvisioned = data.preferences_account === 'user' || Boolean(data.survey_url);
+    const needsAccount = Boolean(data.paid) && !alreadyProvisioned;
+    connectAccount.classList.toggle('hidden', !needsAccount);
+  }
 
   const checkoutLink = document.querySelector('#checkout-link');
   const checkoutNote = document.querySelector('#checkout-note');
@@ -496,3 +523,39 @@ retryButton.addEventListener('click', async () => {
     clearInterval(elapsedTimer);
   }
 });
+
+/* ---------- Connect the user's own Preferences AI account (post-payment) ---------- */
+const provisionBtn = document.querySelector('#provision-btn');
+const paiKeyInput = document.querySelector('#pai-key');
+const provisionNote = document.querySelector('#provision-note');
+if (provisionBtn) {
+  provisionBtn.addEventListener('click', async () => {
+    if (!currentValidationId) return;
+    const key = (paiKeyInput?.value || '').trim();
+    if (!/^pak_/.test(key)) {
+      provisionNote.textContent = 'Enter your Preferences AI API key — it starts with "pak_".';
+      showToast('error', 'API key needed', 'Paste your Preferences AI API key (starts with pak_).');
+      return;
+    }
+    provisionBtn.disabled = true;
+    provisionNote.textContent = 'Generating your survey and running the digital-population simulation on your dashboard… this can take 1–3 minutes.';
+    try {
+      const response = await fetch(`/api/session/${encodeURIComponent(currentValidationId)}/provision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preferences_api_key: key })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `Provisioning failed with HTTP ${response.status}`);
+      if (paiKeyInput) paiKeyInput.value = ''; // don't leave the secret in the DOM
+      render(data);
+      provisionNote.textContent = data.simulation_message || 'Done — your survey and simulation are on your Preferences AI dashboard.';
+      showToast('success', 'On your dashboard', 'The survey and simulation were created on your own Preferences AI account.');
+    } catch (error) {
+      provisionNote.textContent = error.message;
+      showToast('error', 'Could not generate on your account', error.message.slice(0, 160));
+    } finally {
+      provisionBtn.disabled = false;
+    }
+  });
+}

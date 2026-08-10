@@ -1,0 +1,42 @@
+[
+  {
+    "query": "Validate these three packaging concepts before we build",
+    "should_trigger": true
+  },
+  {
+    "query": "Use Preferences AI as a validation layer on our pricing tiers",
+    "should_trigger": true
+  },
+  {
+    "query": "Which homepage headline should we launch?",
+    "should_trigger": true
+  },
+  {
+    "query": "Run a quick concept test on two app mockups with our API key",
+    "should_trigger": true
+  },
+  {
+    "query": "We need deeper PMF evidence—build a survey, simulate, and summarize insights",
+    "should_trigger": true
+  },
+  {
+    "query": "Deploy this survey to real respondents and analyze the results",
+    "should_trigger": true
+  },
+  {
+    "query": "Dig deeper with a follow-up simulation on our last completed run",
+    "should_trigger": true
+  },
+  {
+    "query": "Check our PAI Credits balance before spending",
+    "should_trigger": true
+  },
+  {
+    "query": "Pay USDC via x402 for a quick-run without a team",
+    "should_trigger": false
+  },
+  {
+    "query": "Export results from the dashboard UI only with no API key",
+    "should_trigger": false
+  }
+]

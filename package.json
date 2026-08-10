@@ -22,6 +22,9 @@
     "stripe": "latest"
   },
   "devDependencies": {
-    "playwright": "^1.61.1"
+    "@types/jest": "^30.0.0",
+    "jest": "^30.4.2",
+    "playwright": "^1.61.1",
+    "ts-jest": "^29.4.12"
   }
 }
